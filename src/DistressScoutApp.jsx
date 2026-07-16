@@ -33,6 +33,10 @@ export default function DistressScoutApp() {
   const [scanAddress, setScanAddress] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [scanResults, setScanResults] = useState([]);
+  const [token, setToken] = useState(null);
+  const [authMode, setAuthMode] = useState('signup'); // signup | login
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
   const mapRef = useRef(null);
 
   // Freemium limits
@@ -41,28 +45,78 @@ export default function DistressScoutApp() {
     premium: { scansPerMonth: 500, storageLeads: 5000, exportLimit: 'unlimited' }
   };
 
-  const handleLogin = async (email) => {
+  const authFetch = (path, options = {}) =>
+    fetch(`${API_URL}${path}`, {
+      ...options,
+      headers: { ...(options.headers || {}), Authorization: `Bearer ${token || localStorage.getItem('ds_token')}` }
+    });
+
+  const loadWorkspace = async (authToken) => {
+    const headers = { Authorization: `Bearer ${authToken}` };
+    const [meRes, leadsRes, statsRes] = await Promise.all([
+      fetch(`${API_URL}/api/me`, { headers }),
+      fetch(`${API_URL}/api/leads`, { headers }),
+      fetch(`${API_URL}/api/stats`, { headers })
+    ]);
+    if (!meRes.ok) throw new Error('Session expired');
+
+    const me = await meRes.json();
+    const leadsData = leadsRes.ok ? await leadsRes.json() : { leads: [] };
+    const statsData = statsRes.ok ? await statsRes.json() : {};
+
+    setUserId(me.userId);
+    setSubscriptionTier(me.tier);
+    setUser({ email: me.email, tier: me.tier, joinedDate: new Date(me.createdAt).toLocaleDateString() });
+    setLeads(leadsData.leads.map(mapLeadFromApi));
+    setStats({
+      scansThisMonth: statsData.scansThisMonth ?? 0,
+      leadsGenerated: statsData.leadsGenerated ?? leadsData.leads.length,
+      contactsFound: statsData.contactsFound ?? 0
+    });
+    setView('dashboard');
+  };
+
+  // Restore session on page load
+  useEffect(() => {
+    const saved = localStorage.getItem('ds_token');
+    if (saved) {
+      setToken(saved);
+      loadWorkspace(saved).catch(() => {
+        localStorage.removeItem('ds_token');
+        setToken(null);
+      });
+    }
+  }, []);
+
+  const handleAuth = async (email, password, mode) => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/signup`, {
+      const res = await fetch(`${API_URL}/api/auth/${mode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email })
+        body: JSON.stringify({ email, password })
       });
-      if (!res.ok) throw new Error('Signup failed');
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || `${mode === 'signup' ? 'Signup' : 'Login'} failed`);
+        return;
+      }
 
-      setUserId(data.userId);
-      setSubscriptionTier(data.tier);
-      setUser({ email, tier: data.tier, joinedDate: new Date().toLocaleDateString() });
-      setView('dashboard');
-
-      const leadsRes = await fetch(`${API_URL}/api/leads/${data.userId}`);
-      const leadsData = leadsRes.ok ? await leadsRes.json() : { leads: [] };
-      setLeads(leadsData.leads.map(mapLeadFromApi));
-      setStats({ scansThisMonth: 0, leadsGenerated: leadsData.leads.length, contactsFound: leadsData.leads.length });
+      localStorage.setItem('ds_token', data.token);
+      setToken(data.token);
+      await loadWorkspace(data.token);
     } catch (err) {
       alert(`Could not reach the Distress Scout API at ${API_URL}. Is the backend running? (npm run dev)`);
     }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('ds_token');
+    setToken(null);
+    setUser(null);
+    setUserId(null);
+    setLeads([]);
+    setScanResults([]);
+    setView('login');
   };
 
   const mapLeadFromApi = (lead) => ({
@@ -95,10 +149,9 @@ export default function DistressScoutApp() {
     try {
       const formData = new FormData();
       formData.append('image', uploadedFile);
-      formData.append('userId', userId);
       if (scanAddress) formData.append('address', scanAddress);
 
-      const res = await fetch(`${API_URL}/api/scan`, { method: 'POST', body: formData });
+      const res = await authFetch('/api/scan', { method: 'POST', body: formData });
       const data = await res.json();
 
       if (res.status === 429) {
@@ -136,10 +189,10 @@ export default function DistressScoutApp() {
 
   const handleAddToLeads = async (scan) => {
     try {
-      const res = await fetch(`${API_URL}/api/leads`, {
+      const res = await authFetch('/api/leads', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, scanId: scan.scanId })
+        body: JSON.stringify({ scanId: scan.scanId })
       });
       const data = await res.json();
       if (res.status === 429) {
@@ -156,31 +209,42 @@ export default function DistressScoutApp() {
     }
   };
 
-  const handleExport = () => {
-    if (subscriptionTier === 'free' && stats.leadsGenerated > limits.free.exportLimit) {
-      alert(`Free tier limited to ${limits.free.exportLimit} exports/month`);
-      return;
+  const handleExport = async () => {
+    try {
+      const res = await authFetch('/api/export');
+      if (res.status === 429) {
+        const data = await res.json();
+        alert(`${data.error} (${data.used}/${data.limit} used this month). Upgrade to Premium for unlimited exports.`);
+        return;
+      }
+      if (!res.ok) throw new Error('Export failed');
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `distress-scout-leads-${new Date().toISOString().split('T')[0]}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`Export failed: ${err.message}`);
     }
+  };
 
-    const csv = [
-      ['Address', 'Distress Score', 'Indicators', 'Owner', 'Phone', 'Equity', 'Status'].join(','),
-      ...leads.map(lead => [
-        lead.address,
-        lead.distressScore,
-        lead.indicators.join(';'),
-        lead.owner?.owner || 'N/A',
-        lead.owner?.phone || 'N/A',
-        lead.owner?.equity || 'N/A',
-        lead.status
-      ].join(','))
-    ].join('\n');
+  const handleLeadStatusChange = async (leadId, status) => {
+    try {
+      const res = await authFetch(`/api/leads/${leadId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+      });
+      if (!res.ok) throw new Error('Update failed');
 
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `distress-scout-leads-${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
+      setLeads((prev) => prev.map((l) => (l.leadId === leadId ? { ...l, status } : l)));
+      setSelectedLead((prev) => (prev && prev.leadId === leadId ? { ...prev, status } : prev));
+    } catch (err) {
+      alert(`Could not update lead status: ${err.message}`);
+    }
   };
 
   const handleUpgrade = () => {
@@ -199,26 +263,58 @@ export default function DistressScoutApp() {
           
           <p className="text-center text-gray-600 mb-8">AI-Powered Property Distress Detection for RE Investors</p>
           
-          <div className="space-y-4">
+          <form
+            className="space-y-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleAuth(authEmail, authPassword, authMode);
+            }}
+          >
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Email</label>
               <input
                 type="email"
+                required
                 placeholder="investor@example.com"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                defaultValue="demo@investor.com"
               />
             </div>
-            
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Password</label>
+              <input
+                type="password"
+                required
+                minLength={8}
+                placeholder={authMode === 'signup' ? 'At least 8 characters' : 'Your password'}
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+            </div>
+
             <button
-              onClick={(e) => handleLogin(e.target.previousElementSibling.querySelector('input').value)}
+              type="submit"
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition"
             >
-              Start Free Trial
+              {authMode === 'signup' ? 'Start Free Trial' : 'Log In'}
             </button>
-            
+
+            <p className="text-center text-sm text-gray-600">
+              {authMode === 'signup' ? 'Already have an account?' : 'New to Distress Scout?'}{' '}
+              <button
+                type="button"
+                onClick={() => setAuthMode(authMode === 'signup' ? 'login' : 'signup')}
+                className="text-blue-600 font-bold hover:underline"
+              >
+                {authMode === 'signup' ? 'Log in' : 'Sign up free'}
+              </button>
+            </p>
+
             <p className="text-center text-xs text-gray-500 mt-4">Free: 20 scans/month • Unlimited list viewing</p>
-          </div>
+          </form>
 
           <div className="mt-8 pt-8 border-t border-gray-200">
             <h3 className="font-bold text-gray-900 mb-4">Features:</h3>
@@ -250,7 +346,7 @@ export default function DistressScoutApp() {
                 {user.email} • <span className="font-bold text-blue-600">{subscriptionTier.toUpperCase()}</span>
               </span>
               <button onClick={() => setView('settings')} className="p-2 hover:bg-gray-100 rounded"><Settings className="w-5 h-5" /></button>
-              <button onClick={() => { setUser(null); setView('login'); }} className="p-2 hover:bg-gray-100 rounded"><LogOut className="w-5 h-5" /></button>
+              <button onClick={handleLogout} className="p-2 hover:bg-gray-100 rounded"><LogOut className="w-5 h-5" /></button>
             </div>
           </div>
         </header>
@@ -558,7 +654,15 @@ export default function DistressScoutApp() {
                   </div>
                   <div>
                     <p className="text-gray-600 text-sm">Status</p>
-                    <p className="text-lg font-bold text-blue-600 capitalize">{selectedLead.status}</p>
+                    <select
+                      value={selectedLead.status}
+                      onChange={(e) => handleLeadStatusChange(selectedLead.leadId, e.target.value)}
+                      className="text-lg font-bold text-blue-600 capitalize bg-transparent border border-gray-300 rounded-lg px-2 py-1 mt-1"
+                    >
+                      {['new', 'contacted', 'negotiating', 'under_contract', 'closed', 'dead'].map((s) => (
+                        <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+                      ))}
+                    </select>
                   </div>
                 </div>
               </div>

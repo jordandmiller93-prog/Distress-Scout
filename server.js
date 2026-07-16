@@ -1,27 +1,47 @@
+const dotenv = require('dotenv');
+dotenv.config();
+
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const dotenv = require('dotenv');
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || 'sk_test_placeholder');
 const multer = require('multer');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 const Anthropic = require('@anthropic-ai/sdk');
+const db = require('./db');
 
-dotenv.config();
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-in-production';
+const JWT_EXPIRY = '30d';
 
 const app = express();
 app.use(cors());
+
+// Stripe webhook needs the raw body for signature verification — register before express.json()
+app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+
+  try {
+    const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const userId = session.metadata?.userId;
+      if (userId) db.setTier(userId, 'premium', session.customer);
+    }
+
+    res.json({ received: true });
+  } catch (error) {
+    console.error('Webhook error:', error);
+    res.status(400).send('Webhook Error');
+  }
+});
+
 app.use(express.json());
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 const client = new Anthropic();
-
-// ============ DATABASE (Mock - Replace with Real DB) ============
-const database = {
-  users: {},
-  leads: {},
-  scans: {},
-  subscriptions: {}
-};
 
 // ============ DISTRESS DETECTION WITH CLAUDE API ============
 async function analyzePropertyImage(imageBuffer, address = '', mimeType = 'image/jpeg') {
@@ -62,11 +82,10 @@ Look for: boarded windows, roof damage, overgrown yard, peeling paint, junk pile
       ],
     });
 
-    // Parse Claude's response
     const responseText = message.content.find((b) => b.type === 'text')?.text || '';
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     let analysis = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
-    
+
     return {
       success: true,
       analysis,
@@ -91,7 +110,7 @@ Look for: boarded windows, roof damage, overgrown yard, peeling paint, junk pile
 async function lookupOwnerInfo(address) {
   // In production: Call Trestle API, BeenVerified API, or county records
   // For now: Mock response
-  
+
   const mockOwners = {
     '123 Main St': {
       name: 'John Smith',
@@ -139,60 +158,70 @@ const TIERS = {
   }
 };
 
-// ============ AUTH & USER MANAGEMENT ============
-app.post('/api/auth/signup', (req, res) => {
-  const { email } = req.body;
-  
-  if (!email) return res.status(400).json({ error: 'Email required' });
-  
-  // Simple JWT would be used in production
-  const userId = Buffer.from(email).toString('base64');
-  
-  database.users[userId] = {
-    userId,
-    email,
-    tier: 'free',
-    createdAt: new Date(),
-    scansThisMonth: 0,
-    leadsStored: 0,
-    exportsUsed: 0
-  };
+// ============ AUTH ============
+function issueToken(user) {
+  return jwt.sign({ sub: user.userId, email: user.email }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+}
 
-  database.subscriptions[userId] = {
-    tier: 'free',
-    status: 'active',
-    renewalDate: null
-  };
+function authRequired(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Authentication required' });
 
-  res.json({ userId, tier: 'free', message: 'Welcome to Distress Scout!' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = db.getUser(payload.sub);
+    if (!req.user) return res.status(401).json({ error: 'User not found' });
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+}
+
+app.post('/api/auth/signup', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  if (db.getUserByEmail(email)) return res.status(409).json({ error: 'An account with this email already exists. Try logging in.' });
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const user = db.createUser({ userId: `user_${crypto.randomUUID()}`, email, passwordHash });
+
+  res.json({ userId: user.userId, tier: user.tier, token: issueToken(user), message: 'Welcome to Distress Scout!' });
 });
 
-app.get('/api/user/:userId', (req, res) => {
-  const user = database.users[req.params.userId];
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  
-  const subscription = database.subscriptions[req.params.userId];
-  res.json({ ...user, subscription });
+app.post('/api/auth/login', async (req, res) => {
+  const { email, password } = req.body;
+
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+  const user = db.getUserByEmail(email);
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+    return res.status(401).json({ error: 'Invalid email or password' });
+  }
+
+  res.json({ userId: user.userId, tier: user.tier, token: issueToken(user) });
+});
+
+app.get('/api/me', authRequired, (req, res) => {
+  const { passwordHash, ...user } = req.user;
+  res.json(user);
 });
 
 // ============ DISTRESS SCAN ENDPOINT ============
-app.post('/api/scan', upload.single('image'), async (req, res) => {
+app.post('/api/scan', authRequired, upload.single('image'), async (req, res) => {
   try {
-    const { userId, address, latitude, longitude } = req.body;
-    
-    if (!userId || !req.file) {
-      return res.status(400).json({ error: 'Missing userId or image' });
-    }
+    const { address, latitude, longitude } = req.body;
+    const user = req.user;
 
-    // Check freemium limits
-    const user = database.users[userId];
-    const tier = database.subscriptions[userId]?.tier || 'free';
-    
-    if (user.scansThisMonth >= TIERS[tier].scansPerMonth) {
-      return res.status(429).json({ 
+    if (!req.file) return res.status(400).json({ error: 'Missing image' });
+
+    if (user.scansThisMonth >= TIERS[user.tier].scansPerMonth) {
+      return res.status(429).json({
         error: 'Monthly scan limit reached',
-        limit: TIERS[tier].scansPerMonth,
-        tier: tier,
+        limit: TIERS[user.tier].scansPerMonth,
+        tier: user.tier,
         upgradeUrl: '/pricing'
       });
     }
@@ -205,31 +234,27 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
       ? { ...analysis.analysis, aiAnalysis: true }
       : { ...analysis.fallback, aiAnalysis: false, aiError: analysis.error };
 
-    // Lookup owner info
     const ownerInfo = await lookupOwnerInfo(address || 'Unknown');
 
-    // Create scan record
-    const scanId = `scan_${Date.now()}`;
+    const scanId = `scan_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const scan = {
       scanId,
-      userId,
+      userId: user.userId,
       address: address || 'Address Pending',
       coordinates: { latitude, longitude },
       ...analysisResult,
       ownerInfo,
-      createdAt: new Date()
+      createdAt: new Date().toISOString()
     };
 
-    database.scans[scanId] = scan;
-    
-    // Increment usage
-    user.scansThisMonth += 1;
+    db.saveScan(scan);
+    db.incrementScans(user.userId);
 
     res.json({
       scanId,
       success: true,
       data: scan,
-      remaining: TIERS[tier].scansPerMonth - user.scansThisMonth
+      remaining: TIERS[user.tier].scansPerMonth - user.scansThisMonth - 1
     });
 
   } catch (error) {
@@ -239,66 +264,57 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
 });
 
 // ============ LEADS MANAGEMENT ============
-app.post('/api/leads', (req, res) => {
-  const { userId, scanId } = req.body;
-  const scan = database.scans[scanId];
-  
-  if (!scan) return res.status(404).json({ error: 'Scan not found' });
-  
-  const user = database.users[userId];
-  const tier = database.subscriptions[userId]?.tier || 'free';
-  
-  if (user.leadsStored >= TIERS[tier].storageLeads) {
+app.post('/api/leads', authRequired, (req, res) => {
+  const { scanId } = req.body;
+  const user = req.user;
+  const scan = db.getScan(scanId);
+
+  if (!scan || scan.userId !== user.userId) return res.status(404).json({ error: 'Scan not found' });
+
+  if (user.leadsStored >= TIERS[user.tier].storageLeads) {
     return res.status(429).json({
       error: 'Lead storage limit reached',
-      limit: TIERS[tier].storageLeads
+      limit: TIERS[user.tier].storageLeads
     });
   }
 
-  const leadId = `lead_${Date.now()}`;
+  const leadId = `lead_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
   const lead = {
     leadId,
-    userId,
     ...scan,
     status: 'new',
-    addedAt: new Date()
+    addedAt: new Date().toISOString()
   };
 
-  if (!database.leads[userId]) database.leads[userId] = [];
-  database.leads[userId].push(lead);
-  user.leadsStored += 1;
+  db.saveLead(lead);
 
   res.json({ leadId, lead });
 });
 
-app.get('/api/leads/:userId', (req, res) => {
-  const leads = database.leads[req.params.userId] || [];
+app.get('/api/leads', authRequired, (req, res) => {
+  const leads = db.getLeads(req.user.userId);
   res.json({ leads, count: leads.length });
 });
 
-app.patch('/api/leads/:leadId', (req, res) => {
+app.patch('/api/leads/:leadId', authRequired, (req, res) => {
   const { status } = req.body;
-  
-  // Find and update lead across all users
-  for (const userId in database.leads) {
-    const lead = database.leads[userId].find(l => l.leadId === req.params.leadId);
-    if (lead) {
-      lead.status = status;
-      return res.json({ lead });
-    }
+  const allowed = ['new', 'contacted', 'negotiating', 'under_contract', 'closed', 'dead'];
+
+  if (!allowed.includes(status)) {
+    return res.status(400).json({ error: `Status must be one of: ${allowed.join(', ')}` });
   }
-  
-  res.status(404).json({ error: 'Lead not found' });
+
+  const lead = db.updateLeadStatus(req.params.leadId, req.user.userId, status);
+  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+  res.json({ lead });
 });
 
 // ============ EXPORT ENDPOINT ============
-app.get('/api/export/:userId', (req, res) => {
-  const user = database.users[req.params.userId];
-  const tier = database.subscriptions[req.params.userId]?.tier || 'free';
-  
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  
-  if (tier === 'free' && user.exportsUsed >= TIERS.free.exportLimit) {
+app.get('/api/export', authRequired, (req, res) => {
+  const user = req.user;
+
+  if (user.tier === 'free' && user.exportsUsed >= TIERS.free.exportLimit) {
     return res.status(429).json({
       error: 'Export limit reached',
       limit: TIERS.free.exportLimit,
@@ -306,24 +322,26 @@ app.get('/api/export/:userId', (req, res) => {
     });
   }
 
-  const leads = database.leads[req.params.userId] || [];
-  
-  // Generate CSV
+  const leads = db.getLeads(user.userId);
+
+  const csvField = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
   const csv = [
-    ['Address', 'Distress Score', 'Risk Level', 'Owner', 'Phone', 'Email', 'Status', 'Added Date'].join(','),
+    ['Address', 'Distress Score', 'Risk Level', 'Indicators', 'Owner', 'Phone', 'Email', 'Equity', 'Status', 'Added Date'].join(','),
     ...leads.map(lead => [
       lead.address,
       lead.distressScore,
       lead.riskLevel,
+      (lead.indicators || []).join('; '),
       lead.ownerInfo?.name,
       lead.ownerInfo?.phone,
       lead.ownerInfo?.email,
+      lead.ownerInfo?.equity,
       lead.status,
       lead.addedAt
-    ].map(field => `"${field || ''}"`.replace(/"/g, '""')).join(','))
+    ].map(csvField).join(','))
   ].join('\n');
 
-  user.exportsUsed += 1;
+  db.incrementExports(user.userId);
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename=distress-scout-leads.csv');
@@ -331,21 +349,20 @@ app.get('/api/export/:userId', (req, res) => {
 });
 
 // ============ STRIPE SUBSCRIPTION ============
-app.post('/api/subscribe/premium', async (req, res) => {
-  const { userId, email } = req.body;
-  
+app.post('/api/subscribe/premium', authRequired, async (req, res) => {
+  const user = req.user;
+
   try {
-    // Create Stripe customer
     const customer = await stripe.customers.create({
-      email,
-      metadata: { userId }
+      email: user.email,
+      metadata: { userId: user.userId }
     });
 
-    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       customer: customer.id,
       mode: 'subscription',
       payment_method_types: ['card'],
+      metadata: { userId: user.userId },
       line_items: [{
         price_data: {
           currency: 'usd',
@@ -373,57 +390,28 @@ app.post('/api/subscribe/premium', async (req, res) => {
   }
 });
 
-app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  
-  try {
-    const event = stripe.webhooks.constructEvent(
-      req.body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      const userId = session.metadata?.userId || Buffer.from(session.customer_email).toString('base64');
-      
-      // Upgrade user to premium
-      if (database.subscriptions[userId]) {
-        database.subscriptions[userId].tier = 'premium';
-        database.subscriptions[userId].stripeCustomerId = session.customer;
-        database.subscriptions[userId].renewalDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      }
-    }
-
-    res.json({ received: true });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(400).send('Webhook Error');
-  }
-});
-
 // ============ STATS ENDPOINT ============
-app.get('/api/stats/:userId', (req, res) => {
-  const user = database.users[req.params.userId];
-  const leads = database.leads[req.params.userId] || [];
-  const tier = database.subscriptions[req.params.userId]?.tier || 'free';
-  
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  
+app.get('/api/stats', authRequired, (req, res) => {
+  const user = req.user;
+  const leads = db.getLeads(user.userId);
+
   res.json({
-    tier,
+    tier: user.tier,
     scansThisMonth: user.scansThisMonth,
-    scansLimit: TIERS[tier].scansPerMonth,
+    scansLimit: TIERS[user.tier].scansPerMonth,
     leadsGenerated: leads.length,
-    leadsLimit: TIERS[tier].storageLeads,
+    leadsLimit: TIERS[user.tier].storageLeads,
     contactsFound: leads.filter(l => l.ownerInfo && l.ownerInfo.phone !== 'Pending skip trace...').length,
     exportsUsed: user.exportsUsed,
-    exportsLimit: TIERS[tier].exportLimit
+    exportsLimit: TIERS[user.tier].exportLimit
   });
 });
 
 // ============ HEALTH CHECK ============
 app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
@@ -432,7 +420,8 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Distress Scout API running on http://localhost:${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`💳 Stripe Integration: ${process.env.STRIPE_SECRET_KEY ? 'Configured' : 'Not configured'}`);
+  console.log(`💾 Database: SQLite (persistent)`);
+  console.log(`💳 Stripe Integration: ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_') && !process.env.STRIPE_SECRET_KEY.includes('your_stripe') ? 'Configured' : 'Not configured'}`);
 });
 
 module.exports = app;
