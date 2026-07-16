@@ -19,14 +19,19 @@ const mockOwnerData = {
   '789 Elm St': { owner: 'Mary Johnson', phone: '555-0103', email: 'mary@example.com', equity: '$45K' }
 };
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+
 export default function DistressScoutApp() {
   const [user, setUser] = useState(null);
+  const [userId, setUserId] = useState(null);
   const [leads, setLeads] = useState([]);
   const [view, setView] = useState('login'); // login, dashboard, scan, details
   const [selectedLead, setSelectedLead] = useState(null);
   const [subscriptionTier, setSubscriptionTier] = useState('free');
   const [stats, setStats] = useState({ scansThisMonth: 0, leadsGenerated: 0, contactsFound: 0 });
   const [uploadedFile, setUploadedFile] = useState(null);
+  const [scanAddress, setScanAddress] = useState('');
+  const [isScanning, setIsScanning] = useState(false);
   const [scanResults, setScanResults] = useState([]);
   const mapRef = useRef(null);
 
@@ -36,76 +41,119 @@ export default function DistressScoutApp() {
     premium: { scansPerMonth: 500, storageLeads: 5000, exportLimit: 'unlimited' }
   };
 
-  const handleLogin = (email) => {
-    setUser({ email, tier: 'free', joinedDate: new Date().toLocaleDateString() });
-    setView('dashboard');
-    // Initialize mock leads for demo
-    setLeads([
-      {
-        id: 1,
-        address: '123 Main St',
-        lat: 40.7128,
-        lng: -74.0060,
-        distressScore: 8.2,
-        indicators: ['boarded_windows', 'roof_damage'],
-        owner: mockOwnerData['123 Main St'],
-        dateFound: new Date().toLocaleDateString(),
-        status: 'new'
-      },
-      {
-        id: 2,
-        address: '456 Oak Ave',
-        lat: 40.7580,
-        lng: -73.9855,
-        distressScore: 6.5,
-        indicators: ['overgrown_yard', 'peeling_paint'],
-        owner: mockOwnerData['456 Oak Ave'],
-        dateFound: new Date().toLocaleDateString(),
-        status: 'contacted'
-      }
-    ]);
-    setStats({ scansThisMonth: 12, leadsGenerated: 2, contactsFound: 1 });
+  const handleLogin = async (email) => {
+    try {
+      const res = await fetch(`${API_URL}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      if (!res.ok) throw new Error('Signup failed');
+      const data = await res.json();
+
+      setUserId(data.userId);
+      setSubscriptionTier(data.tier);
+      setUser({ email, tier: data.tier, joinedDate: new Date().toLocaleDateString() });
+      setView('dashboard');
+
+      const leadsRes = await fetch(`${API_URL}/api/leads/${data.userId}`);
+      const leadsData = leadsRes.ok ? await leadsRes.json() : { leads: [] };
+      setLeads(leadsData.leads.map(mapLeadFromApi));
+      setStats({ scansThisMonth: 0, leadsGenerated: leadsData.leads.length, contactsFound: leadsData.leads.length });
+    } catch (err) {
+      alert(`Could not reach the Distress Scout API at ${API_URL}. Is the backend running? (npm run dev)`);
+    }
   };
+
+  const mapLeadFromApi = (lead) => ({
+    id: lead.leadId,
+    leadId: lead.leadId,
+    scanId: lead.scanId,
+    address: lead.address,
+    lat: lead.coordinates?.latitude ? parseFloat(lead.coordinates.latitude) : null,
+    lng: lead.coordinates?.longitude ? parseFloat(lead.coordinates.longitude) : null,
+    distressScore: lead.distressScore,
+    riskLevel: lead.riskLevel,
+    indicators: lead.indicators || [],
+    summary: lead.summary,
+    owner: lead.ownerInfo
+      ? {
+          owner: lead.ownerInfo.name,
+          phone: lead.ownerInfo.phone,
+          email: lead.ownerInfo.email,
+          equity: lead.ownerInfo.equity
+        }
+      : null,
+    dateFound: new Date(lead.addedAt || lead.createdAt || Date.now()).toLocaleDateString(),
+    status: lead.status || 'new'
+  });
 
   const handleAnalyzeImage = async () => {
-    if (!uploadedFile) return;
+    if (!uploadedFile || isScanning) return;
 
-    // Simulate distress detection
-    const detectedIndicators = Object.keys(mockDistressIndicators).slice(0, Math.floor(Math.random() * 3) + 2);
-    const distressScore = detectedIndicators.reduce((sum, ind) => sum + mockDistressIndicators[ind].score, 0) / detectedIndicators.length;
+    setIsScanning(true);
+    try {
+      const formData = new FormData();
+      formData.append('image', uploadedFile);
+      formData.append('userId', userId);
+      if (scanAddress) formData.append('address', scanAddress);
 
-    const newScan = {
-      id: leads.length + 1,
-      address: `Property #${leads.length + 1}`,
-      distressScore: parseFloat(distressScore.toFixed(1)),
-      indicators: detectedIndicators,
-      imageFile: uploadedFile.name,
-      timestamp: new Date().toLocaleTimeString(),
-      status: 'review'
-    };
+      const res = await fetch(`${API_URL}/api/scan`, { method: 'POST', body: formData });
+      const data = await res.json();
 
-    setScanResults([...scanResults, newScan]);
-    setUploadedFile(null);
+      if (res.status === 429) {
+        alert(`${data.error} (limit: ${data.limit}/month). Upgrade to Premium for more scans.`);
+        return;
+      }
+      if (!res.ok || !data.success) throw new Error(data.error || 'Scan failed');
+
+      const scan = data.data;
+      const newScan = {
+        id: scan.scanId,
+        scanId: scan.scanId,
+        address: scan.address,
+        distressScore: scan.distressScore,
+        riskLevel: scan.riskLevel,
+        indicators: scan.indicators || [],
+        summary: scan.summary,
+        investmentPotential: scan.investmentPotential,
+        ownerInfo: scan.ownerInfo,
+        imageFile: uploadedFile.name,
+        timestamp: new Date().toLocaleTimeString(),
+        status: 'review'
+      };
+
+      setScanResults([...scanResults, newScan]);
+      setStats((s) => ({ ...s, scansThisMonth: s.scansThisMonth + 1 }));
+      setUploadedFile(null);
+      setScanAddress('');
+    } catch (err) {
+      alert(`Scan failed: ${err.message}`);
+    } finally {
+      setIsScanning(false);
+    }
   };
 
-  const handleAddToLeads = (scan) => {
-    const newLead = {
-      ...scan,
-      lat: 40.7128 + Math.random() * 0.5,
-      lng: -74.0060 + Math.random() * 0.5,
-      owner: {
-        owner: 'Owner Info Pending',
-        phone: 'Processing...',
-        email: 'Pending',
-        equity: 'Analyzing...'
-      },
-      dateFound: new Date().toLocaleDateString(),
-      status: 'new'
-    };
+  const handleAddToLeads = async (scan) => {
+    try {
+      const res = await fetch(`${API_URL}/api/leads`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, scanId: scan.scanId })
+      });
+      const data = await res.json();
+      if (res.status === 429) {
+        alert(`${data.error} (limit: ${data.limit}). Upgrade to Premium for more storage.`);
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || 'Failed to save lead');
 
-    setLeads([...leads, newLead]);
-    setScanResults(scanResults.filter(s => s.id !== scan.id));
-    setStats({ ...stats, leadsGenerated: stats.leadsGenerated + 1, scansThisMonth: stats.scansThisMonth + 1 });
+      setLeads([...leads, mapLeadFromApi(data.lead)]);
+      setScanResults(scanResults.filter((s) => s.id !== scan.id));
+      setStats((s) => ({ ...s, leadsGenerated: s.leadsGenerated + 1, contactsFound: s.contactsFound + 1 }));
+    } catch (err) {
+      alert(`Could not save lead: ${err.message}`);
+    }
   };
 
   const handleExport = () => {
@@ -402,6 +450,8 @@ export default function DistressScoutApp() {
                 <input
                   type="text"
                   placeholder="123 Main St, New York, NY 10001"
+                  value={scanAddress}
+                  onChange={(e) => setScanAddress(e.target.value)}
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
@@ -428,10 +478,10 @@ export default function DistressScoutApp() {
 
             <button
               onClick={handleAnalyzeImage}
-              disabled={!uploadedFile}
+              disabled={!uploadedFile || isScanning}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-lg transition"
             >
-              Analyze Photo for Distress
+              {isScanning ? 'Analyzing with AI…' : 'Analyze Photo for Distress'}
             </button>
           </div>
 
@@ -454,7 +504,7 @@ export default function DistressScoutApp() {
                     <div className="flex flex-wrap gap-2">
                       {scan.indicators.map((ind) => (
                         <span key={ind} className="bg-yellow-100 text-yellow-800 px-3 py-1 rounded text-sm">
-                          {ind.replace(/_/g, ' ')} ({mockDistressIndicators[ind].score}/10)
+                          {ind.replace(/_/g, ' ')}{mockDistressIndicators[ind] ? ` (${mockDistressIndicators[ind].score}/10)` : ''}
                         </span>
                       ))}
                     </div>
@@ -520,11 +570,11 @@ export default function DistressScoutApp() {
                     <div key={ind} className="flex items-center justify-between p-3 bg-gray-50 rounded">
                       <span className="font-medium text-gray-900">{ind.replace(/_/g, ' ')}</span>
                       <span className={`font-bold ${
-                        mockDistressIndicators[ind].risk === 'high' ? 'text-red-600' :
-                        mockDistressIndicators[ind].risk === 'medium' ? 'text-yellow-600' :
+                        mockDistressIndicators[ind]?.risk === 'high' ? 'text-red-600' :
+                        mockDistressIndicators[ind]?.risk === 'medium' ? 'text-yellow-600' :
                         'text-green-600'
                       }`}>
-                        {mockDistressIndicators[ind].score}/10
+                        {mockDistressIndicators[ind] ? `${mockDistressIndicators[ind].score}/10` : 'detected'}
                       </span>
                     </div>
                   ))}

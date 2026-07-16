@@ -24,12 +24,12 @@ const database = {
 };
 
 // ============ DISTRESS DETECTION WITH CLAUDE API ============
-async function analyzePropertyImage(imageBuffer, address = '') {
+async function analyzePropertyImage(imageBuffer, address = '', mimeType = 'image/jpeg') {
   try {
     const base64Image = imageBuffer.toString('base64');
-    
+
     const message = await client.messages.create({
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-8",
       max_tokens: 1024,
       messages: [
         {
@@ -39,7 +39,7 @@ async function analyzePropertyImage(imageBuffer, address = '') {
               type: "image",
               source: {
                 type: "base64",
-                media_type: "image/jpeg",
+                media_type: mimeType,
                 data: base64Image,
               },
             },
@@ -63,8 +63,9 @@ Look for: boarded windows, roof damage, overgrown yard, peeling paint, junk pile
     });
 
     // Parse Claude's response
-    const responseText = message.content[0].type === 'text' ? message.content[0].text : '';
-    let analysis = JSON.parse(responseText);
+    const responseText = message.content.find((b) => b.type === 'text')?.text || '';
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    let analysis = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
     
     return {
       success: true,
@@ -196,12 +197,13 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
       });
     }
 
-    // Analyze image with Claude
-    const analysis = await analyzePropertyImage(req.file.buffer, address);
-    
-    if (!analysis.success) {
-      return res.status(500).json({ error: 'Image analysis failed', details: analysis.error });
-    }
+    // Analyze image with Claude; fall back to a placeholder result when the
+    // API is unreachable or the key is invalid so the app stays usable
+    const analysis = await analyzePropertyImage(req.file.buffer, address, req.file.mimetype);
+
+    const analysisResult = analysis.success
+      ? { ...analysis.analysis, aiAnalysis: true }
+      : { ...analysis.fallback, aiAnalysis: false, aiError: analysis.error };
 
     // Lookup owner info
     const ownerInfo = await lookupOwnerInfo(address || 'Unknown');
@@ -213,7 +215,7 @@ app.post('/api/scan', upload.single('image'), async (req, res) => {
       userId,
       address: address || 'Address Pending',
       coordinates: { latitude, longitude },
-      ...analysis.analysis,
+      ...analysisResult,
       ownerInfo,
       createdAt: new Date()
     };
