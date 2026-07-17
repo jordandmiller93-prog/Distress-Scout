@@ -65,11 +65,19 @@ const now = () => new Date().toISOString();
 let query;
 let ready;
 
-if (process.env.DATABASE_URL) {
+// Vercel marketplace integrations name the connection string differently
+// (Neon: DATABASE_URL; Vercel/Neon legacy: POSTGRES_URL variants) — accept any.
+const PG_URL =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.POSTGRES_PRISMA_URL ||
+  process.env.POSTGRES_URL_NON_POOLING;
+
+if (PG_URL) {
   const { Pool } = require('pg');
   const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
+    connectionString: PG_URL,
+    ssl: PG_URL.includes('localhost') ? false : { rejectUnauthorized: false },
     max: 3
   });
   query = (sql, params = []) => pool.query(sql, params);
@@ -117,6 +125,7 @@ async function rollMonthlyCounters(row) {
 
 module.exports = {
   ready,
+  driver: PG_URL ? 'postgres' : 'sqlite',
 
   async createUser({ userId, email, passwordHash }) {
     await ready;

@@ -742,7 +742,7 @@ app.get('/health', (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    database: process.env.DATABASE_URL ? 'postgres' : 'sqlite (ephemeral!)',
+    database: db.driver === 'postgres' ? 'postgres' : 'sqlite (ephemeral!)',
     timestamp: new Date().toISOString()
   });
 });
