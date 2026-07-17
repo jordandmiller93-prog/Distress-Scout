@@ -43,6 +43,11 @@ export default function DistressScoutApp() {
   const [authMode, setAuthMode] = useState('signup'); // signup | login
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [areaZip, setAreaZip] = useState('');
+  const [areaState, setAreaState] = useState({
+    running: false, location: null, total: 0, nextOffset: null,
+    results: [], violationSource: null, streetViewEnabled: false, error: null
+  });
   const mapRef = useRef(null);
 
   // Freemium limits
@@ -213,6 +218,38 @@ export default function DistressScoutApp() {
       setStats((s) => ({ ...s, leadsGenerated: s.leadsGenerated + 1, contactsFound: s.contactsFound + 1 }));
     } catch (err) {
       alert(`Could not save lead: ${err.message}`);
+    }
+  };
+
+  const handleAreaScan = async (offset = 0) => {
+    if (!/^\d{5}$/.test(areaZip)) {
+      setAreaState((s) => ({ ...s, error: 'Enter a valid 5-digit ZIP code' }));
+      return;
+    }
+    setAreaState((s) => ({ ...s, running: true, error: null, ...(offset === 0 ? { results: [] } : {}) }));
+    try {
+      const res = await authFetch('/api/area-scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zip: areaZip, offset, batchSize: 10 })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Area scan failed');
+
+      setAreaState((s) => ({
+        ...s,
+        running: false,
+        location: data.location,
+        total: data.totalAddresses,
+        nextOffset: data.nextOffset,
+        violationSource: data.violationSource,
+        streetViewEnabled: data.streetViewEnabled,
+        results: [...(offset === 0 ? [] : s.results), ...data.results]
+          .sort((a, b) => b.distressorScore - a.distressorScore)
+      }));
+      setStats((s) => ({ ...s, scansThisMonth: s.scansThisMonth + data.scannedThisBatch }));
+    } catch (err) {
+      setAreaState((s) => ({ ...s, running: false, error: err.message }));
     }
   };
 
@@ -474,6 +511,12 @@ export default function DistressScoutApp() {
                 <MapPin className="w-4 h-4 mr-2" /> New Scan
               </button>
               <button
+                onClick={() => setView('area')}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg transition flex items-center"
+              >
+                <Map className="w-4 h-4 mr-2" /> Area Scan (ZIP)
+              </button>
+              <button
                 onClick={handleExport}
                 className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg transition flex items-center"
               >
@@ -557,6 +600,140 @@ export default function DistressScoutApp() {
               </div>
             )}
           </div>
+        </main>
+      </div>
+    );
+  }
+
+  // AREA SCAN VIEW: type a ZIP, get a ranked list of distressed properties
+  if (view === 'area') {
+    const scanned = areaState.results.length;
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <header className="bg-white shadow-sm sticky top-0 z-10">
+          <div className="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
+            <button onClick={() => setView('dashboard')} className="text-gray-600 hover:text-gray-900 font-bold">← Back</button>
+            <h1 className="text-xl font-bold text-gray-900">Area Scan</h1>
+            <div className="w-12" />
+          </div>
+        </header>
+
+        <main className="max-w-5xl mx-auto px-4 py-8">
+          <div className="bg-white rounded-lg shadow p-6 mb-6">
+            <p className="text-gray-600 mb-4">
+              Enter a ZIP code. Distress Scout sweeps every mapped address — satellite
+              {areaState.streetViewEnabled ? ' + street view' : ''} imagery scored by AI, cross-checked
+              against public code-violation records — and ranks the most distressed properties.
+            </p>
+            <div className="flex gap-3">
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={5}
+                value={areaZip}
+                onChange={(e) => setAreaZip(e.target.value.replace(/\D/g, ''))}
+                placeholder="ZIP code e.g. 43605"
+                className="border border-gray-300 rounded-lg px-4 py-2 w-48 text-lg font-mono"
+              />
+              <button
+                onClick={() => handleAreaScan(0)}
+                disabled={areaState.running}
+                className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-2 px-6 rounded-lg transition flex items-center"
+              >
+                <Map className="w-4 h-4 mr-2" />
+                {areaState.running ? 'Scanning…' : 'Scan Area'}
+              </button>
+            </div>
+            {areaState.error && (
+              <p className="mt-3 text-red-600 flex items-center"><AlertCircle className="w-4 h-4 mr-2" />{areaState.error}</p>
+            )}
+            {areaState.running && (
+              <p className="mt-3 text-gray-500 animate-pulse">
+                Pulling imagery and scoring 10 properties — takes about a minute…
+              </p>
+            )}
+            {areaState.location && !areaState.running && (
+              <div className="mt-4 text-sm text-gray-600 space-y-1">
+                <p>
+                  <span className="font-bold">{areaState.location.city}, {areaState.location.state} {areaState.location.zip}</span>
+                  {' — '}{areaState.total.toLocaleString()} addresses found, {scanned} scanned so far
+                </p>
+                <p>
+                  {areaState.violationSource?.source
+                    ? `✅ Code violations: ${areaState.violationSource.source} (${areaState.violationSource.recordsInZip} records in this ZIP)`
+                    : `ℹ️ ${areaState.violationSource?.message || 'Code-violation data not checked yet'}`}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {areaState.results.length > 0 && (
+            <div className="bg-white rounded-lg shadow overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 className="text-lg font-bold text-gray-900">Ranked by Distressor Score</h2>
+                {areaState.nextOffset !== null && (
+                  <button
+                    onClick={() => handleAreaScan(areaState.nextOffset)}
+                    disabled={areaState.running}
+                    className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold py-2 px-4 rounded-lg transition"
+                  >
+                    {areaState.running ? 'Scanning…' : 'Scan Next 10 →'}
+                  </button>
+                )}
+              </div>
+              <div className="divide-y divide-gray-100">
+                {areaState.results.map((r, i) => (
+                  <div key={`${r.address}-${i}`} className="px-6 py-4 flex items-start justify-between gap-4 hover:bg-gray-50">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className={`px-3 py-1 rounded-full text-sm font-bold ${
+                          r.distressorScore >= 7 ? 'bg-red-100 text-red-800' :
+                          r.distressorScore >= 4 ? 'bg-yellow-100 text-yellow-800' :
+                          'bg-green-100 text-green-800'
+                        }`}>
+                          {r.distressorScore}
+                        </span>
+                        <span className="font-medium text-gray-900">{r.address}</span>
+                        {r.violations?.length > 0 && (
+                          <span className="px-2 py-0.5 rounded bg-orange-100 text-orange-800 text-xs font-bold">
+                            {r.violations.length} violation{r.violations.length > 1 ? 's' : ''}
+                          </span>
+                        )}
+                        {!r.scored && (
+                          <span className="px-2 py-0.5 rounded bg-gray-100 text-gray-500 text-xs">no imagery</span>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-600 mt-1">{r.summary || r.error}</p>
+                      {(r.indicators || []).length > 0 && (
+                        <p className="text-xs text-gray-500 mt-1">{r.indicators.join(' · ')}</p>
+                      )}
+                      {(r.violations || []).slice(0, 2).map((vio, vi) => (
+                        <p key={vi} className="text-xs text-orange-700 mt-1">⚠ {vio.description}{vio.status ? ` — ${vio.status}` : ''}</p>
+                      ))}
+                    </div>
+                    <div className="flex flex-col items-end gap-2 shrink-0">
+                      <a
+                        href={`https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${r.lat},${r.lng}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 hover:text-blue-900 text-sm font-bold"
+                      >
+                        Street View ↗
+                      </a>
+                      {r.scanId && (
+                        <button
+                          onClick={() => handleAddToLeads({ scanId: r.scanId })}
+                          className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-1.5 px-3 rounded-lg transition"
+                        >
+                          + Add to Leads
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </main>
       </div>
     );

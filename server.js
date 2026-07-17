@@ -10,6 +10,8 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const Anthropic = require('@anthropic-ai/sdk');
 const db = require('./db');
+const areaScan = require('./area-scan');
+const violations = require('./violations');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-in-production';
 const JWT_EXPIRY = '30d';
@@ -608,6 +610,111 @@ app.post('/api/subscribe/premium', authRequired, async (req, res) => {
   } catch (error) {
     console.error('Stripe error:', error);
     res.status(500).json({ error: 'Payment setup failed' });
+  }
+});
+
+// ============ AREA SCAN: ZIP -> DISTRESSED PROPERTY LIST ============
+// Two signal layers merged into one ranked "distressor score":
+//   1. Visual — satellite (+ Street View when GOOGLE_MAPS_API_KEY is set) scored by Claude
+//   2. Records — public code-violation data auto-discovered for the city
+// Processes `batchSize` properties per request; the frontend pages with `offset`.
+app.post('/api/area-scan', authRequired, async (req, res) => {
+  try {
+    const { zip, offset = 0 } = req.body;
+    const batchSize = Math.min(Number(req.body.batchSize) || 10, 20);
+    const user = req.user;
+
+    if (!/^\d{5}$/.test(String(zip || ''))) {
+      return res.status(400).json({ error: 'Enter a valid 5-digit ZIP code' });
+    }
+
+    if (user.scansThisMonth + batchSize > TIERS[user.tier].scansPerMonth) {
+      return res.status(429).json({
+        error: 'Monthly scan limit reached',
+        limit: TIERS[user.tier].scansPerMonth,
+        tier: user.tier,
+        upgradeUrl: '/pricing'
+      });
+    }
+
+    const location = await areaScan.lookupZip(zip);
+
+    // Violations lookup and address discovery run in parallel
+    const [addresses, violationData] = await Promise.all([
+      areaScan.discoverAddresses(location),
+      violations.getViolationsForZip(zip, location.city, location.state, location)
+    ]);
+
+    if (!addresses.length) {
+      return res.status(404).json({
+        error: `No mapped addresses found for ZIP ${zip}. Try a nearby ZIP.`,
+        location
+      });
+    }
+
+    const batch = addresses.slice(Number(offset), Number(offset) + batchSize);
+    const scored = await areaScan.scoreBatch(client, batch);
+
+    // Merge layers: violations matched by normalized street address
+    const results = scored.map((p) => {
+      const key = p.address.toUpperCase();
+      const propViolations = violationData.available
+        ? violationData.byAddress[key] || []
+        : [];
+      return {
+        ...p,
+        violations: propViolations,
+        distressorScore: violations.combineScores(p.scored ? p.distressScore : 0, propViolations)
+      };
+    });
+    results.sort((a, b) => b.distressorScore - a.distressorScore);
+
+    // Persist notable finds as scans so they can be promoted to leads
+    const saved = [];
+    for (const r of results) {
+      if (r.distressorScore < 4) continue;
+      const scanId = `scan_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      await db.saveScan({
+        scanId,
+        userId: user.userId,
+        address: `${r.address}, ${r.city}, ${r.state} ${r.zip}`,
+        coordinates: { latitude: r.lat, longitude: r.lng },
+        distressScore: r.distressorScore,
+        riskLevel: r.riskLevel || (r.distressorScore >= 7 ? 'high' : 'medium'),
+        indicators: [
+          ...(r.indicators || []),
+          ...r.violations.map((v) => `violation:${v.category}`)
+        ],
+        summary: r.summary || r.violations[0]?.description || 'Flagged by area scan',
+        aiAnalysis: !!r.scored,
+        areaScan: true,
+        ownerInfo: await lookupOwnerInfo(r.address),
+        createdAt: new Date().toISOString()
+      });
+      r.scanId = scanId;
+      saved.push(scanId);
+    }
+
+    for (let i = 0; i < batch.length; i++) await db.incrementScans(user.userId);
+
+    res.json({
+      success: true,
+      location,
+      totalAddresses: addresses.length,
+      offset: Number(offset),
+      scannedThisBatch: batch.length,
+      nextOffset: Number(offset) + batch.length < addresses.length ? Number(offset) + batch.length : null,
+      violationSource: violationData.available
+        ? { source: violationData.source, recordsInZip: violationData.count }
+        : { message: violationData.message },
+      streetViewEnabled: !!process.env.GOOGLE_MAPS_API_KEY,
+      results,
+      savedScanIds: saved,
+      remaining: TIERS[user.tier].scansPerMonth - user.scansThisMonth - batch.length
+    });
+  } catch (error) {
+    console.error('Area scan error:', error);
+    res.status(500).json({ error: `Area scan failed: ${error.message}` });
   }
 });
 
