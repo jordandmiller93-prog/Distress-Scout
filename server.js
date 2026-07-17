@@ -310,6 +310,65 @@ app.patch('/api/leads/:leadId', authRequired, (req, res) => {
   res.json({ lead });
 });
 
+// ============ OUTREACH AGENT ============
+async function generateOutreach(lead) {
+  const message = await client.messages.create({
+    model: "claude-opus-4-8",
+    max_tokens: 2048,
+    messages: [
+      {
+        role: "user",
+        content: `You are an expert real estate wholesaling outreach writer. Write personalized, empathetic, compliant seller outreach for this distressed property lead. Never be pushy or predatory; lead with helping the owner out of a difficult situation. Return ONLY valid JSON (no markdown):
+
+{
+  "callScript": "<a natural phone script with [PAUSE] markers and objection-handling notes, ~250 words>",
+  "voicemail": "<a 20-second voicemail script>",
+  "sms": "<a friendly opening text message under 160 characters, TCPA-safe tone>",
+  "directMailLetter": "<a short handwritten-style letter, ~120 words>",
+  "negotiationTips": ["<3-5 tips specific to this property's condition and owner situation>"]
+}
+
+Lead data:
+- Address: ${lead.address}
+- Distress score: ${lead.distressScore}/10 (${lead.riskLevel} risk)
+- Observed condition: ${(lead.indicators || []).join(', ')}
+- Assessment: ${lead.summary || 'n/a'}
+- Owner: ${lead.ownerInfo?.name || 'unknown'}
+- Estimated equity: ${lead.ownerInfo?.equity || 'unknown'}
+- Liens: ${lead.ownerInfo?.liens ?? 'unknown'}
+- Pipeline status: ${lead.status}`
+      }
+    ],
+  });
+
+  const text = message.content.find((b) => b.type === 'text')?.text || '';
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+}
+
+app.post('/api/leads/:leadId/outreach', authRequired, async (req, res) => {
+  try {
+    const lead = db.getLead(req.params.leadId, req.user.userId);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+    // Return cached outreach unless a refresh is requested
+    if (lead.outreach && !req.query.refresh) {
+      return res.json({ outreach: lead.outreach, cached: true });
+    }
+
+    const outreach = await generateOutreach(lead);
+    db.mergeLeadData(req.params.leadId, req.user.userId, {
+      outreach,
+      outreachGeneratedAt: new Date().toISOString()
+    });
+
+    res.json({ outreach, cached: false });
+  } catch (error) {
+    console.error('Outreach error:', error);
+    res.status(500).json({ error: 'Outreach generation failed', details: error.message });
+  }
+});
+
 // ============ EXPORT ENDPOINT ============
 app.get('/api/export', authRequired, (req, res) => {
   const user = req.user;

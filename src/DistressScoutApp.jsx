@@ -34,6 +34,7 @@ export default function DistressScoutApp() {
   const [isScanning, setIsScanning] = useState(false);
   const [scanResults, setScanResults] = useState([]);
   const [token, setToken] = useState(null);
+  const [isGeneratingOutreach, setIsGeneratingOutreach] = useState(false);
   const [authMode, setAuthMode] = useState('signup'); // signup | login
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -139,7 +140,8 @@ export default function DistressScoutApp() {
         }
       : null,
     dateFound: new Date(lead.addedAt || lead.createdAt || Date.now()).toLocaleDateString(),
-    status: lead.status || 'new'
+    status: lead.status || 'new',
+    outreach: lead.outreach || null
   });
 
   const handleAnalyzeImage = async () => {
@@ -228,6 +230,22 @@ export default function DistressScoutApp() {
       URL.revokeObjectURL(url);
     } catch (err) {
       alert(`Export failed: ${err.message}`);
+    }
+  };
+
+  const handleGenerateOutreach = async (lead, refresh = false) => {
+    setIsGeneratingOutreach(true);
+    try {
+      const res = await authFetch(`/api/leads/${lead.leadId}/outreach${refresh ? '?refresh=1' : ''}`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Generation failed');
+
+      setLeads((prev) => prev.map((l) => (l.leadId === lead.leadId ? { ...l, outreach: data.outreach } : l)));
+      setSelectedLead((prev) => (prev && prev.leadId === lead.leadId ? { ...prev, outreach: data.outreach } : prev));
+    } catch (err) {
+      alert(`Outreach generation failed: ${err.message}`);
+    } finally {
+      setIsGeneratingOutreach(false);
     }
   };
 
@@ -683,6 +701,64 @@ export default function DistressScoutApp() {
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* Outreach Agent */}
+              <div className="bg-white rounded-lg shadow p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-bold text-gray-900 flex items-center">
+                    <Zap className="w-5 h-5 mr-2 text-yellow-500" /> Outreach Agent
+                  </h3>
+                  <button
+                    onClick={() => handleGenerateOutreach(selectedLead, !!selectedLead.outreach)}
+                    disabled={isGeneratingOutreach}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded-lg text-sm transition"
+                  >
+                    {isGeneratingOutreach ? 'Writing…' : selectedLead.outreach ? 'Regenerate' : 'Generate Outreach'}
+                  </button>
+                </div>
+
+                {!selectedLead.outreach && !isGeneratingOutreach && (
+                  <p className="text-sm text-gray-600">
+                    AI writes a personalized call script, voicemail, SMS, and direct-mail letter for this owner,
+                    based on the property's condition and equity position.
+                  </p>
+                )}
+
+                {selectedLead.outreach && (
+                  <div className="space-y-4">
+                    {[
+                      ['Call Script', selectedLead.outreach.callScript],
+                      ['Voicemail', selectedLead.outreach.voicemail],
+                      ['Text Message', selectedLead.outreach.sms],
+                      ['Direct Mail Letter', selectedLead.outreach.directMailLetter]
+                    ].map(([label, content]) => content && (
+                      <div key={label} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="font-bold text-gray-900 text-sm">{label}</h4>
+                          <button
+                            onClick={() => navigator.clipboard.writeText(content)}
+                            className="text-xs text-blue-600 font-bold hover:underline"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <p className="text-sm text-gray-700 whitespace-pre-wrap">{content}</p>
+                      </div>
+                    ))}
+
+                    {selectedLead.outreach.negotiationTips?.length > 0 && (
+                      <div className="border border-gray-200 rounded-lg p-4 bg-yellow-50">
+                        <h4 className="font-bold text-gray-900 text-sm mb-2">Negotiation Tips</h4>
+                        <ul className="list-disc list-inside space-y-1 text-sm text-gray-700">
+                          {selectedLead.outreach.negotiationTips.map((tip, i) => (
+                            <li key={i}>{tip}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 

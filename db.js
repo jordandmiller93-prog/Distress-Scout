@@ -124,6 +124,14 @@ module.exports = {
     return row ? { ...JSON.parse(row.data), status: row.status, addedAt: row.added_at } : null;
   },
 
+  mergeLeadData(leadId, userId, patch) {
+    const row = db.prepare('SELECT data FROM leads WHERE lead_id = ? AND user_id = ?').get(leadId, userId);
+    if (!row) return null;
+    const data = { ...JSON.parse(row.data), ...patch };
+    db.prepare('UPDATE leads SET data = ? WHERE lead_id = ? AND user_id = ?').run(JSON.stringify(data), leadId, userId);
+    return this.getLead(leadId, userId);
+  },
+
   updateLeadStatus(leadId, userId, status) {
     const result = db.prepare('UPDATE leads SET status = ? WHERE lead_id = ? AND user_id = ?').run(status, leadId, userId);
     return result.changes > 0 ? this.getLead(leadId, userId) : null;
