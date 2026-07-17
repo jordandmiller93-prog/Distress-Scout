@@ -8,3 +8,4 @@ build/
 *.db-shm
 *.db-wal
 api/_env.js
+vercel.env
