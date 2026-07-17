@@ -37,7 +37,93 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
   }
 });
 
+// ============ VOICE AGENT (ElevenLabs) ============
+// Post-call webhook: ElevenLabs POSTs the transcript + analysis after every call.
+// Raw body required for HMAC verification, so this is registered before express.json().
+app.post('/api/voice/call-completed', express.raw({ type: '*/*' }), (req, res) => {
+  const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+  if (!secret || secret.includes('your_')) {
+    return res.status(503).json({ error: 'ELEVENLABS_WEBHOOK_SECRET not configured' });
+  }
+
+  // Verify ElevenLabs signature: header "elevenlabs-signature" = "t=<ts>,v0=<hmac>"
+  try {
+    const sigHeader = req.headers['elevenlabs-signature'] || '';
+    const parts = Object.fromEntries(sigHeader.split(',').map((p) => p.split('=')));
+    const timestamp = parts.t;
+    const signature = parts.v0;
+    if (!timestamp || !signature) throw new Error('missing signature');
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 30 * 60) throw new Error('stale timestamp');
+
+    const expected = crypto
+      .createHmac('sha256', secret)
+      .update(`${timestamp}.${req.body.toString()}`)
+      .digest('hex');
+    const provided = signature.replace(/^v0=/, '');
+    const a = Buffer.from(expected);
+    const b = Buffer.from(provided);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new Error('bad signature');
+  } catch (err) {
+    console.error('Voice webhook signature rejected:', err.message);
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  try {
+    const payload = JSON.parse(req.body.toString());
+    const data = payload.data || payload;
+
+    const phone =
+      data.metadata?.phone_call?.external_number ||
+      data.conversation_initiation_client_data?.dynamic_variables?.system__caller_id ||
+      data.metadata?.caller_id ||
+      null;
+
+    const lead = phone ? db.findLeadByPhone(phone) : null;
+
+    db.saveCall({
+      callId: `call_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+      conversationId: data.conversation_id || `conv_${Date.now()}`,
+      leadId: lead?.leadId || null,
+      phone,
+      summary: data.analysis?.transcript_summary || null,
+      successful: data.analysis?.call_successful || null,
+      transcript: (data.transcript || []).map((t) => ({ role: t.role, message: t.message }))
+    });
+
+    console.log(`📞 Call logged${lead ? ` for lead ${lead.leadId}` : ' (no matching lead)'} from ${phone || 'unknown'}`);
+    res.json({ received: true, matchedLead: lead?.leadId || null });
+  } catch (error) {
+    console.error('Voice webhook error:', error);
+    res.status(400).json({ error: 'Bad payload' });
+  }
+});
+
 app.use(express.json());
+
+// Mid-call context lookup: the ElevenLabs agent calls this as a server tool to
+// personalize the conversation when a seller calls in.
+app.get('/api/voice/context', (req, res) => {
+  const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+  if (!secret || req.headers['x-voice-secret'] !== secret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const phone = req.query.phone || '';
+  const lead = db.findLeadByPhone(phone);
+  if (!lead) return res.json({ known: false });
+
+  res.json({
+    known: true,
+    address: lead.address,
+    ownerName: lead.ownerInfo?.name,
+    distressScore: lead.distressScore,
+    condition: (lead.indicators || []).join(', '),
+    pipelineStatus: lead.status,
+    lastOutreach: lead.smsLog?.length
+      ? `SMS sent ${lead.smsLog[lead.smsLog.length - 1].sentAt}`
+      : 'none recorded'
+  });
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
@@ -367,6 +453,21 @@ app.post('/api/leads/:leadId/outreach', authRequired, async (req, res) => {
     console.error('Outreach error:', error);
     res.status(500).json({ error: 'Outreach generation failed', details: error.message });
   }
+});
+
+app.get('/api/leads/:leadId/calls', authRequired, (req, res) => {
+  const lead = db.getLead(req.params.leadId, req.user.userId);
+  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+  const calls = db.getCallsForLead(req.params.leadId).map((c) => ({
+    callId: c.call_id,
+    phone: c.phone,
+    summary: c.summary,
+    successful: c.successful,
+    transcript: JSON.parse(c.transcript || '[]'),
+    at: c.created_at
+  }));
+  res.json({ calls, count: calls.length });
 });
 
 // ============ SMS SENDING (Twilio) ============

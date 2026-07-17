@@ -35,6 +35,7 @@ export default function DistressScoutApp() {
   const [scanResults, setScanResults] = useState([]);
   const [token, setToken] = useState(null);
   const [isGeneratingOutreach, setIsGeneratingOutreach] = useState(false);
+  const [callLog, setCallLog] = useState([]);
   const [authMode, setAuthMode] = useState('signup'); // signup | login
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -272,6 +273,21 @@ export default function DistressScoutApp() {
       alert(`SMS sent to ${data.to} (status: ${data.status})`);
     } catch (err) {
       alert(`SMS send failed: ${err.message}`);
+    }
+  };
+
+  const openLeadDetails = async (lead) => {
+    setSelectedLead(lead);
+    setCallLog([]);
+    setView('details');
+    try {
+      const res = await authFetch(`/api/leads/${lead.leadId}/calls`);
+      if (res.ok) {
+        const data = await res.json();
+        setCallLog(data.calls);
+      }
+    } catch {
+      // call log is best-effort
     }
   };
 
@@ -524,7 +540,7 @@ export default function DistressScoutApp() {
                         </td>
                         <td className="px-6 py-4">
                           <button
-                            onClick={() => { setSelectedLead(lead); setView('details'); }}
+                            onClick={() => openLeadDetails(lead)}
                             className="text-blue-600 hover:text-blue-900 text-sm font-bold"
                           >
                             View
@@ -728,6 +744,28 @@ export default function DistressScoutApp() {
                   ))}
                 </div>
               </div>
+
+              {/* Call Log (from ElevenLabs voice agent) */}
+              {callLog.length > 0 && (
+                <div className="bg-white rounded-lg shadow p-6">
+                  <h3 className="text-lg font-bold text-gray-900 mb-4">📞 Call History</h3>
+                  <div className="space-y-3">
+                    {callLog.map((call) => (
+                      <div key={call.callId} className="border border-gray-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-bold text-gray-900">{call.phone || 'Unknown caller'}</span>
+                          <span className={`text-xs px-2 py-1 rounded-full font-bold ${
+                            call.successful === 'success' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700'
+                          }`}>
+                            {new Date(call.at + 'Z').toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-700">{call.summary || 'No summary available'}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Outreach Agent */}
               <div className="bg-white rounded-lg shadow p-6">

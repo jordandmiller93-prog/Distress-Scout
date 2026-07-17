@@ -38,6 +38,19 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id);
   CREATE INDEX IF NOT EXISTS idx_scans_user ON scans(user_id);
+
+  CREATE TABLE IF NOT EXISTS calls (
+    call_id         TEXT PRIMARY KEY,
+    conversation_id TEXT UNIQUE,
+    lead_id         TEXT REFERENCES leads(lead_id),
+    phone           TEXT,
+    summary         TEXT,
+    successful      TEXT,
+    transcript      TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
 `);
 
 const currentMonth = () => new Date().toISOString().slice(0, 7); // YYYY-MM
@@ -122,6 +135,37 @@ module.exports = {
   getLead(leadId, userId) {
     const row = db.prepare('SELECT data, status, added_at FROM leads WHERE lead_id = ? AND user_id = ?').get(leadId, userId);
     return row ? { ...JSON.parse(row.data), status: row.status, addedAt: row.added_at } : null;
+  },
+
+  saveCall({ callId, conversationId, leadId, phone, summary, successful, transcript }) {
+    db.prepare(
+      `INSERT INTO calls (call_id, conversation_id, lead_id, phone, summary, successful, transcript)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(conversation_id) DO UPDATE SET
+         summary = excluded.summary, successful = excluded.successful, transcript = excluded.transcript`
+    ).run(callId, conversationId, leadId, phone, summary, successful, JSON.stringify(transcript || []));
+  },
+
+  getCallsForLead(leadId) {
+    return db.prepare('SELECT * FROM calls WHERE lead_id = ? ORDER BY created_at DESC').all(leadId);
+  },
+
+  findLeadByPhone(phone) {
+    // Match on the last 10 digits so +1 prefixes and formatting don't matter
+    const tail = phone.replace(/\D/g, '').slice(-10);
+    if (tail.length < 10) return null;
+    const rows = db.prepare('SELECT lead_id, user_id, data FROM leads').all();
+    for (const row of rows) {
+      const lead = JSON.parse(row.data);
+      const candidates = [
+        lead.ownerInfo?.phone,
+        ...(lead.smsLog || []).map((s) => s.to)
+      ].filter(Boolean);
+      if (candidates.some((p) => p.replace(/\D/g, '').slice(-10) === tail)) {
+        return { ...lead, leadId: row.lead_id, userId: row.user_id };
+      }
+    }
+    return null;
   },
 
   mergeLeadData(leadId, userId, patch) {
