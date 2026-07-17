@@ -669,30 +669,45 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
     });
     results.sort((a, b) => b.distressorScore - a.distressorScore);
 
-    // Persist notable finds as scans so they can be promoted to leads
+    // Persist every scanned property to the account; distressed finds
+    // (score >= 4) become leads automatically — the hunt fills the pipeline.
+    const existingLeads = await db.getLeads(user.userId);
+    const leadAddresses = new Set(existingLeads.map((l) => (l.address || '').toUpperCase()));
     const saved = [];
+    let autoLeads = 0;
     for (const r of results) {
-      if (r.distressorScore < 4) continue;
+      const fullAddress = `${r.address}, ${r.city}, ${r.state} ${r.zip}`;
       const scanId = `scan_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-      await db.saveScan({
+      const scan = {
         scanId,
         userId: user.userId,
-        address: `${r.address}, ${r.city}, ${r.state} ${r.zip}`,
+        address: fullAddress,
         coordinates: { latitude: r.lat, longitude: r.lng },
         distressScore: r.distressorScore,
-        riskLevel: r.riskLevel || (r.distressorScore >= 7 ? 'high' : 'medium'),
+        riskLevel: r.riskLevel || (r.distressorScore >= 7 ? 'high' : r.distressorScore >= 4 ? 'medium' : 'low'),
         indicators: [
           ...(r.indicators || []),
           ...r.violations.map((v) => `violation:${v.category}`)
         ],
-        summary: r.summary || r.violations[0]?.description || 'Flagged by area scan',
+        summary: r.summary || r.violations[0]?.description || 'Scanned by area scan',
         aiAnalysis: !!r.scored,
         areaScan: true,
         ownerInfo: await lookupOwnerInfo(r.address),
         createdAt: new Date().toISOString()
-      });
+      };
+      await db.saveScan(scan);
       r.scanId = scanId;
       saved.push(scanId);
+
+      const isDuplicate = leadAddresses.has(fullAddress.toUpperCase());
+      const underLimit = existingLeads.length + autoLeads < TIERS[user.tier].storageLeads;
+      if (r.distressorScore >= 4 && !isDuplicate && underLimit) {
+        const leadId = `lead_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+        await db.saveLead({ leadId, ...scan, status: 'new', addedAt: new Date().toISOString() });
+        leadAddresses.add(fullAddress.toUpperCase());
+        r.leadId = leadId;
+        autoLeads++;
+      }
     }
 
     for (let i = 0; i < batch.length; i++) await db.incrementScans(user.userId);
@@ -710,6 +725,7 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       streetViewEnabled: !!process.env.GOOGLE_MAPS_API_KEY,
       results,
       savedScanIds: saved,
+      autoSavedLeads: autoLeads,
       remaining: TIERS[user.tier].scansPerMonth - user.scansThisMonth - batch.length
     });
   } catch (error) {

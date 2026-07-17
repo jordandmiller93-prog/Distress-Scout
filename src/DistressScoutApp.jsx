@@ -248,6 +248,12 @@ export default function DistressScoutApp() {
           .sort((a, b) => b.distressorScore - a.distressorScore)
       }));
       setStats((s) => ({ ...s, scansThisMonth: s.scansThisMonth + data.scannedThisBatch }));
+      // Distressed finds are saved as leads server-side — refresh the list
+      if (data.autoSavedLeads > 0) {
+        const leadsRes = await authFetch('/api/leads');
+        const leadsData = await leadsRes.json();
+        if (leadsRes.ok) setLeads(leadsData.leads.map(mapLeadFromApi));
+      }
     } catch (err) {
       setAreaState((s) => ({ ...s, running: false, error: err.message }));
     }
@@ -720,14 +726,16 @@ export default function DistressScoutApp() {
                       >
                         Street View ↗
                       </a>
-                      {r.scanId && (
+                      {r.leadId ? (
+                        <span className="text-green-700 text-xs font-bold">✓ Saved to leads</span>
+                      ) : r.scanId ? (
                         <button
                           onClick={() => handleAddToLeads({ scanId: r.scanId })}
                           className="bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold py-1.5 px-3 rounded-lg transition"
                         >
                           + Add to Leads
                         </button>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 ))}
