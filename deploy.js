@@ -26,6 +26,7 @@ const files = include.map((f) => ({
     headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       name: process.env.DEPLOY_NAME || 'distress-scout',
+      project: process.env.DEPLOY_PROJECT || undefined,
       target: process.env.DEPLOY_TARGET || 'production',
       files,
       projectSettings: {
