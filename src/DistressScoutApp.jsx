@@ -19,7 +19,11 @@ const mockOwnerData = {
   '789 Elm St': { owner: 'Mary Johnson', phone: '555-0103', email: 'mary@example.com', equity: '$45K' }
 };
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
+// In production the API is served from the same origin; in dev it runs on :3001
+const API_URL =
+  process.env.NODE_ENV === 'production'
+    ? ''
+    : process.env.REACT_APP_API_URL || 'http://localhost:3001';
 
 export default function DistressScoutApp() {
   const [user, setUser] = useState(null);

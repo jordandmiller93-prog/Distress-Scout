@@ -1,11 +1,21 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+// Database layer with two drivers behind one async API:
+//  - Postgres (pg) when DATABASE_URL is set — for production (e.g. Vercel + Neon)
+//  - SQLite (better-sqlite3) otherwise — for local development
+const currentMonth = () => new Date().toISOString().slice(0, 7); // YYYY-MM
 
-const dbPath = process.env.DATABASE_FILE || path.join(__dirname, 'distress-scout.db');
-const db = new Database(dbPath);
-db.pragma('journal_mode = WAL');
+const USER_FIELDS = (row) => ({
+  userId: row.user_id,
+  email: row.email,
+  passwordHash: row.password_hash,
+  tier: row.tier,
+  scansThisMonth: row.scans_this_month,
+  exportsUsed: row.exports_used,
+  leadsStored: row.leads_stored,
+  stripeCustomerId: row.stripe_customer_id,
+  createdAt: row.created_at
+});
 
-db.exec(`
+const SCHEMA = `
   CREATE TABLE IF NOT EXISTS users (
     user_id           TEXT PRIMARY KEY,
     email             TEXT UNIQUE NOT NULL,
@@ -17,144 +27,191 @@ db.exec(`
     exports_used      INTEGER NOT NULL DEFAULT 0,
     leads_stored      INTEGER NOT NULL DEFAULT 0,
     stripe_customer_id TEXT,
-    created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at        TEXT NOT NULL DEFAULT ''
   );
-
   CREATE TABLE IF NOT EXISTS scans (
     scan_id    TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users(user_id),
+    user_id    TEXT NOT NULL,
     data       TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at TEXT NOT NULL DEFAULT ''
   );
-
   CREATE TABLE IF NOT EXISTS leads (
     lead_id  TEXT PRIMARY KEY,
-    user_id  TEXT NOT NULL REFERENCES users(user_id),
-    scan_id  TEXT NOT NULL REFERENCES scans(scan_id),
+    user_id  TEXT NOT NULL,
+    scan_id  TEXT NOT NULL,
     data     TEXT NOT NULL,
     status   TEXT NOT NULL DEFAULT 'new',
-    added_at TEXT NOT NULL DEFAULT (datetime('now'))
+    added_at TEXT NOT NULL DEFAULT ''
   );
-
-  CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id);
-  CREATE INDEX IF NOT EXISTS idx_scans_user ON scans(user_id);
-
   CREATE TABLE IF NOT EXISTS calls (
     call_id         TEXT PRIMARY KEY,
     conversation_id TEXT UNIQUE,
-    lead_id         TEXT REFERENCES leads(lead_id),
+    lead_id         TEXT,
     phone           TEXT,
     summary         TEXT,
     successful      TEXT,
     transcript      TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at      TEXT NOT NULL DEFAULT ''
   );
-
+  CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id);
+  CREATE INDEX IF NOT EXISTS idx_scans_user ON scans(user_id);
   CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
-`);
+`;
 
-const currentMonth = () => new Date().toISOString().slice(0, 7); // YYYY-MM
+const now = () => new Date().toISOString();
 
-function rowToUser(row) {
+// ---------- driver: a minimal async query interface ----------
+// query(sql, params) -> { rows }   using $1,$2,... placeholders
+let query;
+let ready;
+
+if (process.env.DATABASE_URL) {
+  const { Pool } = require('pg');
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
+    max: 3
+  });
+  query = (sql, params = []) => pool.query(sql, params);
+  ready = (async () => {
+    for (const stmt of SCHEMA.split(';').map((s) => s.trim()).filter(Boolean)) {
+      await pool.query(stmt);
+    }
+  })();
+} else {
+  const Database = require('better-sqlite3');
+  const path = require('path');
+  const dbPath = process.env.DATABASE_FILE || path.join(__dirname, 'distress-scout.db');
+  const sqlite = new Database(dbPath);
+  sqlite.pragma('journal_mode = WAL');
+  sqlite.exec(SCHEMA);
+  // Translate $1,$2,... placeholders to positional ? for sqlite
+  query = (sql, params = []) => {
+    const translated = sql.replace(/\$(\d+)/g, '?');
+    const ordered = [...sql.matchAll(/\$(\d+)/g)].map((m) => params[Number(m[1]) - 1]);
+    const stmt = sqlite.prepare(translated);
+    if (/^\s*select/i.test(sql) || /returning/i.test(sql)) {
+      return Promise.resolve({ rows: stmt.all(...ordered) });
+    }
+    const info = stmt.run(...ordered);
+    return Promise.resolve({ rows: [], changes: info.changes });
+  };
+  ready = Promise.resolve();
+}
+
+async function rollMonthlyCounters(row) {
   if (!row) return null;
-  // Roll monthly counters when the calendar month changes
   const month = currentMonth();
   if (row.scans_month !== month) {
-    db.prepare('UPDATE users SET scans_month = ?, scans_this_month = 0 WHERE user_id = ?').run(month, row.user_id);
+    await query('UPDATE users SET scans_month = $1, scans_this_month = 0 WHERE user_id = $2', [month, row.user_id]);
     row.scans_month = month;
     row.scans_this_month = 0;
   }
   if (row.exports_month !== month) {
-    db.prepare('UPDATE users SET exports_month = ?, exports_used = 0 WHERE user_id = ?').run(month, row.user_id);
+    await query('UPDATE users SET exports_month = $1, exports_used = 0 WHERE user_id = $2', [month, row.user_id]);
     row.exports_month = month;
     row.exports_used = 0;
   }
-  return {
-    userId: row.user_id,
-    email: row.email,
-    passwordHash: row.password_hash,
-    tier: row.tier,
-    scansThisMonth: row.scans_this_month,
-    exportsUsed: row.exports_used,
-    leadsStored: row.leads_stored,
-    stripeCustomerId: row.stripe_customer_id,
-    createdAt: row.created_at
-  };
+  return USER_FIELDS(row);
 }
 
 module.exports = {
-  createUser({ userId, email, passwordHash }) {
-    db.prepare(
-      'INSERT INTO users (user_id, email, password_hash, scans_month, exports_month) VALUES (?, ?, ?, ?, ?)'
-    ).run(userId, email, passwordHash, currentMonth(), currentMonth());
+  ready,
+
+  async createUser({ userId, email, passwordHash }) {
+    await ready;
+    await query(
+      'INSERT INTO users (user_id, email, password_hash, scans_month, exports_month, created_at) VALUES ($1, $2, $3, $4, $5, $6)',
+      [userId, email, passwordHash, currentMonth(), currentMonth(), now()]
+    );
     return this.getUser(userId);
   },
 
-  getUser(userId) {
-    return rowToUser(db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId));
+  async getUser(userId) {
+    await ready;
+    const { rows } = await query('SELECT * FROM users WHERE user_id = $1', [userId]);
+    return rollMonthlyCounters(rows[0]);
   },
 
-  getUserByEmail(email) {
-    return rowToUser(db.prepare('SELECT * FROM users WHERE email = ?').get(email));
+  async getUserByEmail(email) {
+    await ready;
+    const { rows } = await query('SELECT * FROM users WHERE email = $1', [email]);
+    return rollMonthlyCounters(rows[0]);
   },
 
-  incrementScans(userId) {
-    db.prepare('UPDATE users SET scans_this_month = scans_this_month + 1 WHERE user_id = ?').run(userId);
+  async incrementScans(userId) {
+    await query('UPDATE users SET scans_this_month = scans_this_month + 1 WHERE user_id = $1', [userId]);
   },
 
-  incrementExports(userId) {
-    db.prepare('UPDATE users SET exports_used = exports_used + 1 WHERE user_id = ?').run(userId);
+  async incrementExports(userId) {
+    await query('UPDATE users SET exports_used = exports_used + 1 WHERE user_id = $1', [userId]);
   },
 
-  setTier(userId, tier, stripeCustomerId = null) {
-    db.prepare('UPDATE users SET tier = ?, stripe_customer_id = COALESCE(?, stripe_customer_id) WHERE user_id = ?')
-      .run(tier, stripeCustomerId, userId);
+  async setTier(userId, tier, stripeCustomerId = null) {
+    await query('UPDATE users SET tier = $1, stripe_customer_id = COALESCE($2, stripe_customer_id) WHERE user_id = $3',
+      [tier, stripeCustomerId, userId]);
   },
 
-  saveScan(scan) {
-    db.prepare('INSERT INTO scans (scan_id, user_id, data) VALUES (?, ?, ?)')
-      .run(scan.scanId, scan.userId, JSON.stringify(scan));
+  async saveScan(scan) {
+    await query('INSERT INTO scans (scan_id, user_id, data, created_at) VALUES ($1, $2, $3, $4)',
+      [scan.scanId, scan.userId, JSON.stringify(scan), now()]);
   },
 
-  getScan(scanId) {
-    const row = db.prepare('SELECT data FROM scans WHERE scan_id = ?').get(scanId);
-    return row ? JSON.parse(row.data) : null;
+  async getScan(scanId) {
+    const { rows } = await query('SELECT data FROM scans WHERE scan_id = $1', [scanId]);
+    return rows[0] ? JSON.parse(rows[0].data) : null;
   },
 
-  saveLead(lead) {
-    db.prepare('INSERT INTO leads (lead_id, user_id, scan_id, data, status) VALUES (?, ?, ?, ?, ?)')
-      .run(lead.leadId, lead.userId, lead.scanId, JSON.stringify(lead), lead.status || 'new');
-    db.prepare('UPDATE users SET leads_stored = leads_stored + 1 WHERE user_id = ?').run(lead.userId);
+  async saveLead(lead) {
+    await query('INSERT INTO leads (lead_id, user_id, scan_id, data, status, added_at) VALUES ($1, $2, $3, $4, $5, $6)',
+      [lead.leadId, lead.userId, lead.scanId, JSON.stringify(lead), lead.status || 'new', now()]);
+    await query('UPDATE users SET leads_stored = leads_stored + 1 WHERE user_id = $1', [lead.userId]);
   },
 
-  getLeads(userId) {
-    return db.prepare('SELECT data, status, added_at FROM leads WHERE user_id = ? ORDER BY added_at').all(userId)
-      .map((row) => ({ ...JSON.parse(row.data), status: row.status, addedAt: row.added_at }));
+  async getLeads(userId) {
+    const { rows } = await query('SELECT data, status, added_at FROM leads WHERE user_id = $1 ORDER BY added_at', [userId]);
+    return rows.map((row) => ({ ...JSON.parse(row.data), status: row.status, addedAt: row.added_at }));
   },
 
-  getLead(leadId, userId) {
-    const row = db.prepare('SELECT data, status, added_at FROM leads WHERE lead_id = ? AND user_id = ?').get(leadId, userId);
-    return row ? { ...JSON.parse(row.data), status: row.status, addedAt: row.added_at } : null;
+  async getLead(leadId, userId) {
+    const { rows } = await query('SELECT data, status, added_at FROM leads WHERE lead_id = $1 AND user_id = $2', [leadId, userId]);
+    return rows[0] ? { ...JSON.parse(rows[0].data), status: rows[0].status, addedAt: rows[0].added_at } : null;
   },
 
-  saveCall({ callId, conversationId, leadId, phone, summary, successful, transcript }) {
-    db.prepare(
-      `INSERT INTO calls (call_id, conversation_id, lead_id, phone, summary, successful, transcript)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(conversation_id) DO UPDATE SET
-         summary = excluded.summary, successful = excluded.successful, transcript = excluded.transcript`
-    ).run(callId, conversationId, leadId, phone, summary, successful, JSON.stringify(transcript || []));
+  async mergeLeadData(leadId, userId, patch) {
+    const { rows } = await query('SELECT data FROM leads WHERE lead_id = $1 AND user_id = $2', [leadId, userId]);
+    if (!rows[0]) return null;
+    const data = { ...JSON.parse(rows[0].data), ...patch };
+    await query('UPDATE leads SET data = $1 WHERE lead_id = $2 AND user_id = $3', [JSON.stringify(data), leadId, userId]);
+    return this.getLead(leadId, userId);
   },
 
-  getCallsForLead(leadId) {
-    return db.prepare('SELECT * FROM calls WHERE lead_id = ? ORDER BY created_at DESC').all(leadId);
+  async updateLeadStatus(leadId, userId, status) {
+    const result = await query('UPDATE leads SET status = $1 WHERE lead_id = $2 AND user_id = $3', [status, leadId, userId]);
+    const changed = result.changes !== undefined ? result.changes > 0 : result.rowCount > 0;
+    return changed ? this.getLead(leadId, userId) : null;
   },
 
-  findLeadByPhone(phone) {
+  async saveCall({ callId, conversationId, leadId, phone, summary, successful, transcript }) {
+    await query(
+      `INSERT INTO calls (call_id, conversation_id, lead_id, phone, summary, successful, transcript, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (conversation_id) DO UPDATE SET
+         summary = EXCLUDED.summary, successful = EXCLUDED.successful, transcript = EXCLUDED.transcript`,
+      [callId, conversationId, leadId, phone, summary, successful, JSON.stringify(transcript || []), now()]
+    );
+  },
+
+  async getCallsForLead(leadId) {
+    const { rows } = await query('SELECT * FROM calls WHERE lead_id = $1 ORDER BY created_at DESC', [leadId]);
+    return rows;
+  },
+
+  async findLeadByPhone(phone) {
     // Match on the last 10 digits so +1 prefixes and formatting don't matter
     const tail = phone.replace(/\D/g, '').slice(-10);
     if (tail.length < 10) return null;
-    const rows = db.prepare('SELECT lead_id, user_id, data FROM leads').all();
+    const { rows } = await query('SELECT lead_id, user_id, data FROM leads', []);
     for (const row of rows) {
       const lead = JSON.parse(row.data);
       const candidates = [
@@ -166,18 +223,5 @@ module.exports = {
       }
     }
     return null;
-  },
-
-  mergeLeadData(leadId, userId, patch) {
-    const row = db.prepare('SELECT data FROM leads WHERE lead_id = ? AND user_id = ?').get(leadId, userId);
-    if (!row) return null;
-    const data = { ...JSON.parse(row.data), ...patch };
-    db.prepare('UPDATE leads SET data = ? WHERE lead_id = ? AND user_id = ?').run(JSON.stringify(data), leadId, userId);
-    return this.getLead(leadId, userId);
-  },
-
-  updateLeadStatus(leadId, userId, status) {
-    const result = db.prepare('UPDATE leads SET status = ? WHERE lead_id = ? AND user_id = ?').run(status, leadId, userId);
-    return result.changes > 0 ? this.getLead(leadId, userId) : null;
   }
 };

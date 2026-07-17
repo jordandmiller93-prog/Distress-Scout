@@ -27,7 +27,7 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object;
       const userId = session.metadata?.userId;
-      if (userId) db.setTier(userId, 'premium', session.customer);
+      if (userId) await db.setTier(userId, 'premium', session.customer);
     }
 
     res.json({ received: true });
@@ -40,7 +40,7 @@ app.post('/api/webhook/stripe', express.raw({ type: 'application/json' }), async
 // ============ VOICE AGENT (ElevenLabs) ============
 // Post-call webhook: ElevenLabs POSTs the transcript + analysis after every call.
 // Raw body required for HMAC verification, so this is registered before express.json().
-app.post('/api/voice/call-completed', express.raw({ type: '*/*' }), (req, res) => {
+app.post('/api/voice/call-completed', express.raw({ type: '*/*' }), async (req, res) => {
   const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
   if (!secret || secret.includes('your_')) {
     return res.status(503).json({ error: 'ELEVENLABS_WEBHOOK_SECRET not configured' });
@@ -78,9 +78,9 @@ app.post('/api/voice/call-completed', express.raw({ type: '*/*' }), (req, res) =
       data.metadata?.caller_id ||
       null;
 
-    const lead = phone ? db.findLeadByPhone(phone) : null;
+    const lead = phone ? await db.findLeadByPhone(phone) : null;
 
-    db.saveCall({
+    await db.saveCall({
       callId: `call_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
       conversationId: data.conversation_id || `conv_${Date.now()}`,
       leadId: lead?.leadId || null,
@@ -102,14 +102,14 @@ app.use(express.json());
 
 // Mid-call context lookup: the ElevenLabs agent calls this as a server tool to
 // personalize the conversation when a seller calls in.
-app.get('/api/voice/context', (req, res) => {
+app.get('/api/voice/context', async (req, res) => {
   const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
   if (!secret || req.headers['x-voice-secret'] !== secret) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const phone = req.query.phone || '';
-  const lead = db.findLeadByPhone(phone);
+  const lead = await db.findLeadByPhone(phone);
   if (!lead) return res.json({ known: false });
 
   res.json({
@@ -249,14 +249,14 @@ function issueToken(user) {
   return jwt.sign({ sub: user.userId, email: user.email }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
 }
 
-function authRequired(req, res, next) {
+async function authRequired(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Authentication required' });
 
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    req.user = db.getUser(payload.sub);
+    req.user = await db.getUser(payload.sub);
     if (!req.user) return res.status(401).json({ error: 'User not found' });
     next();
   } catch {
@@ -269,10 +269,10 @@ app.post('/api/auth/signup', async (req, res) => {
 
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
   if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
-  if (db.getUserByEmail(email)) return res.status(409).json({ error: 'An account with this email already exists. Try logging in.' });
+  if (await db.getUserByEmail(email)) return res.status(409).json({ error: 'An account with this email already exists. Try logging in.' });
 
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = db.createUser({ userId: `user_${crypto.randomUUID()}`, email, passwordHash });
+  const user = await db.createUser({ userId: `user_${crypto.randomUUID()}`, email, passwordHash });
 
   res.json({ userId: user.userId, tier: user.tier, token: issueToken(user), message: 'Welcome to Distress Scout!' });
 });
@@ -282,7 +282,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-  const user = db.getUserByEmail(email);
+  const user = await db.getUserByEmail(email);
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     return res.status(401).json({ error: 'Invalid email or password' });
   }
@@ -333,8 +333,8 @@ app.post('/api/scan', authRequired, upload.single('image'), async (req, res) => 
       createdAt: new Date().toISOString()
     };
 
-    db.saveScan(scan);
-    db.incrementScans(user.userId);
+    await db.saveScan(scan);
+    await db.incrementScans(user.userId);
 
     res.json({
       scanId,
@@ -350,10 +350,10 @@ app.post('/api/scan', authRequired, upload.single('image'), async (req, res) => 
 });
 
 // ============ LEADS MANAGEMENT ============
-app.post('/api/leads', authRequired, (req, res) => {
+app.post('/api/leads', authRequired, async (req, res) => {
   const { scanId } = req.body;
   const user = req.user;
-  const scan = db.getScan(scanId);
+  const scan = await db.getScan(scanId);
 
   if (!scan || scan.userId !== user.userId) return res.status(404).json({ error: 'Scan not found' });
 
@@ -372,17 +372,17 @@ app.post('/api/leads', authRequired, (req, res) => {
     addedAt: new Date().toISOString()
   };
 
-  db.saveLead(lead);
+  await db.saveLead(lead);
 
   res.json({ leadId, lead });
 });
 
-app.get('/api/leads', authRequired, (req, res) => {
-  const leads = db.getLeads(req.user.userId);
+app.get('/api/leads', authRequired, async (req, res) => {
+  const leads = await db.getLeads(req.user.userId);
   res.json({ leads, count: leads.length });
 });
 
-app.patch('/api/leads/:leadId', authRequired, (req, res) => {
+app.patch('/api/leads/:leadId', authRequired, async (req, res) => {
   const { status } = req.body;
   const allowed = ['new', 'contacted', 'negotiating', 'under_contract', 'closed', 'dead'];
 
@@ -390,7 +390,7 @@ app.patch('/api/leads/:leadId', authRequired, (req, res) => {
     return res.status(400).json({ error: `Status must be one of: ${allowed.join(', ')}` });
   }
 
-  const lead = db.updateLeadStatus(req.params.leadId, req.user.userId, status);
+  const lead = await db.updateLeadStatus(req.params.leadId, req.user.userId, status);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
   res.json({ lead });
@@ -434,7 +434,7 @@ Lead data:
 
 app.post('/api/leads/:leadId/outreach', authRequired, async (req, res) => {
   try {
-    const lead = db.getLead(req.params.leadId, req.user.userId);
+    const lead = await db.getLead(req.params.leadId, req.user.userId);
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
     // Return cached outreach unless a refresh is requested
@@ -443,7 +443,7 @@ app.post('/api/leads/:leadId/outreach', authRequired, async (req, res) => {
     }
 
     const outreach = await generateOutreach(lead);
-    db.mergeLeadData(req.params.leadId, req.user.userId, {
+    await db.mergeLeadData(req.params.leadId, req.user.userId, {
       outreach,
       outreachGeneratedAt: new Date().toISOString()
     });
@@ -455,11 +455,11 @@ app.post('/api/leads/:leadId/outreach', authRequired, async (req, res) => {
   }
 });
 
-app.get('/api/leads/:leadId/calls', authRequired, (req, res) => {
-  const lead = db.getLead(req.params.leadId, req.user.userId);
+app.get('/api/leads/:leadId/calls', authRequired, async (req, res) => {
+  const lead = await db.getLead(req.params.leadId, req.user.userId);
   if (!lead) return res.status(404).json({ error: 'Lead not found' });
 
-  const calls = db.getCallsForLead(req.params.leadId).map((c) => ({
+  const calls = (await db.getCallsForLead(req.params.leadId)).map((c) => ({
     callId: c.call_id,
     phone: c.phone,
     summary: c.summary,
@@ -487,7 +487,7 @@ function getTwilioClient() {
 
 app.post('/api/leads/:leadId/send-sms', authRequired, async (req, res) => {
   try {
-    const lead = db.getLead(req.params.leadId, req.user.userId);
+    const lead = await db.getLead(req.params.leadId, req.user.userId);
     if (!lead) return res.status(404).json({ error: 'Lead not found' });
     if (!lead.outreach?.sms) return res.status(400).json({ error: 'Generate outreach first' });
 
@@ -522,7 +522,7 @@ app.post('/api/leads/:leadId/send-sms', authRequired, async (req, res) => {
       status: result.status,
       sentAt: new Date().toISOString()
     }];
-    db.mergeLeadData(req.params.leadId, req.user.userId, { smsLog });
+    await db.mergeLeadData(req.params.leadId, req.user.userId, { smsLog });
 
     res.json({ sid: result.sid, status: result.status, to });
   } catch (error) {
@@ -532,7 +532,7 @@ app.post('/api/leads/:leadId/send-sms', authRequired, async (req, res) => {
 });
 
 // ============ EXPORT ENDPOINT ============
-app.get('/api/export', authRequired, (req, res) => {
+app.get('/api/export', authRequired, async (req, res) => {
   const user = req.user;
 
   if (user.tier === 'free' && user.exportsUsed >= TIERS.free.exportLimit) {
@@ -543,7 +543,7 @@ app.get('/api/export', authRequired, (req, res) => {
     });
   }
 
-  const leads = db.getLeads(user.userId);
+  const leads = await db.getLeads(user.userId);
 
   const csvField = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
   const csv = [
@@ -562,7 +562,7 @@ app.get('/api/export', authRequired, (req, res) => {
     ].map(csvField).join(','))
   ].join('\n');
 
-  db.incrementExports(user.userId);
+  await db.incrementExports(user.userId);
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename=distress-scout-leads.csv');
@@ -612,9 +612,9 @@ app.post('/api/subscribe/premium', authRequired, async (req, res) => {
 });
 
 // ============ STATS ENDPOINT ============
-app.get('/api/stats', authRequired, (req, res) => {
+app.get('/api/stats', authRequired, async (req, res) => {
   const user = req.user;
-  const leads = db.getLeads(user.userId);
+  const leads = await db.getLeads(user.userId);
 
   res.json({
     tier: user.tier,
@@ -638,7 +638,7 @@ app.get('/api/health', (req, res) => {
 
 // ============ START SERVER ============
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+if (require.main === module) app.listen(PORT, () => {
   console.log(`🚀 Distress Scout API running on http://localhost:${PORT}`);
   console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`💾 Database: SQLite (persistent)`);
