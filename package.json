@@ -41,7 +41,8 @@
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
     "redis": "^4.6.12",
-    "stripe": "^13.10.0"
+    "stripe": "^13.10.0",
+    "twilio": "^6.0.2"
   },
   "devDependencies": {
     "jest": "^29.7.0",

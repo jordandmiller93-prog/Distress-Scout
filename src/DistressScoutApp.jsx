@@ -249,6 +249,32 @@ export default function DistressScoutApp() {
     }
   };
 
+  const handleSendSms = async (lead) => {
+    const suggested = lead.owner?.phone?.match(/^\+?\d/) ? lead.owner.phone : '';
+    const to = window.prompt('Send to phone number (E.164 format, e.g. +15551234567):', suggested);
+    if (!to) return;
+
+    try {
+      const res = await authFetch(`/api/leads/${lead.leadId}/send-sms`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: to.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        if (data.missing) {
+          alert(`Twilio setup incomplete. Still needed in .env: ${data.missing.join(', ')}`);
+        } else {
+          alert(data.error || 'SMS send failed');
+        }
+        return;
+      }
+      alert(`SMS sent to ${data.to} (status: ${data.status})`);
+    } catch (err) {
+      alert(`SMS send failed: ${err.message}`);
+    }
+  };
+
   const handleLeadStatusChange = async (leadId, status) => {
     try {
       const res = await authFetch(`/api/leads/${leadId}`, {
@@ -736,12 +762,22 @@ export default function DistressScoutApp() {
                       <div key={label} className="border border-gray-200 rounded-lg p-4">
                         <div className="flex items-center justify-between mb-2">
                           <h4 className="font-bold text-gray-900 text-sm">{label}</h4>
-                          <button
-                            onClick={() => navigator.clipboard.writeText(content)}
-                            className="text-xs text-blue-600 font-bold hover:underline"
-                          >
-                            Copy
-                          </button>
+                          <div className="flex gap-3">
+                            {label === 'Text Message' && (
+                              <button
+                                onClick={() => handleSendSms(selectedLead)}
+                                className="text-xs text-green-600 font-bold hover:underline"
+                              >
+                                Send SMS
+                              </button>
+                            )}
+                            <button
+                              onClick={() => navigator.clipboard.writeText(content)}
+                              className="text-xs text-blue-600 font-bold hover:underline"
+                            >
+                              Copy
+                            </button>
+                          </div>
                         </div>
                         <p className="text-sm text-gray-700 whitespace-pre-wrap">{content}</p>
                       </div>

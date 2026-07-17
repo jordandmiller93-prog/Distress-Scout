@@ -369,6 +369,67 @@ app.post('/api/leads/:leadId/outreach', authRequired, async (req, res) => {
   }
 });
 
+// ============ SMS SENDING (Twilio) ============
+function getTwilioClient() {
+  const { TWILIO_ACCOUNT_SID, TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, TWILIO_PHONE_NUMBER } = process.env;
+  const configured =
+    TWILIO_ACCOUNT_SID?.startsWith('AC') &&
+    TWILIO_API_KEY_SID?.startsWith('SK') &&
+    TWILIO_API_KEY_SECRET &&
+    !TWILIO_API_KEY_SECRET.includes('your_api_key') &&
+    /^\+\d{10,15}$/.test(TWILIO_PHONE_NUMBER || '');
+
+  if (!configured) return null;
+  const twilio = require('twilio');
+  return twilio(TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, { accountSid: TWILIO_ACCOUNT_SID });
+}
+
+app.post('/api/leads/:leadId/send-sms', authRequired, async (req, res) => {
+  try {
+    const lead = db.getLead(req.params.leadId, req.user.userId);
+    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    if (!lead.outreach?.sms) return res.status(400).json({ error: 'Generate outreach first' });
+
+    const to = (req.body.to || '').trim();
+    if (!/^\+\d{10,15}$/.test(to)) {
+      return res.status(400).json({ error: 'Recipient phone must be in E.164 format, e.g. +15551234567' });
+    }
+
+    const twilioClient = getTwilioClient();
+    if (!twilioClient) {
+      return res.status(503).json({
+        error: 'Twilio is not fully configured',
+        missing: [
+          !process.env.TWILIO_ACCOUNT_SID?.startsWith('AC') && 'TWILIO_ACCOUNT_SID',
+          !/^\+\d{10,15}$/.test(process.env.TWILIO_PHONE_NUMBER || '') && 'TWILIO_PHONE_NUMBER',
+          (!process.env.TWILIO_API_KEY_SECRET || process.env.TWILIO_API_KEY_SECRET.includes('your_api_key')) && 'TWILIO_API_KEY_SECRET'
+        ].filter(Boolean)
+      });
+    }
+
+    const message = req.body.message || lead.outreach.sms;
+    const result = await twilioClient.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to
+    });
+
+    const smsLog = [...(lead.smsLog || []), {
+      to,
+      message,
+      sid: result.sid,
+      status: result.status,
+      sentAt: new Date().toISOString()
+    }];
+    db.mergeLeadData(req.params.leadId, req.user.userId, { smsLog });
+
+    res.json({ sid: result.sid, status: result.status, to });
+  } catch (error) {
+    console.error('SMS error:', error);
+    res.status(500).json({ error: 'SMS send failed', details: error.message });
+  }
+});
+
 // ============ EXPORT ENDPOINT ============
 app.get('/api/export', authRequired, (req, res) => {
   const user = req.user;
