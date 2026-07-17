@@ -158,15 +158,49 @@ async function fetchViolations(zip, city, state, loc) {
     });
 }
 
+// Nationwide fallback: SeeClickFix 311 issues (open API). Sparser than a
+// county code-enforcement feed, but covers cities with no open-data portal.
+// Only property-distress categories are kept; potholes and streetlights are
+// classified 'other' and dropped.
+async function fetchSeeClickFix(loc) {
+  const d = 0.03;
+  const params = new URLSearchParams({
+    min_lat: loc.lat - d, max_lat: loc.lat + d,
+    min_lng: loc.lng - d, max_lng: loc.lng + d,
+    status: 'open,acknowledged,closed',
+    per_page: '100'
+  });
+  const res = await fetch(`https://seeclickfix.com/api/v2/issues?${params}`);
+  if (!res.ok) throw new Error(`SeeClickFix: HTTP ${res.status}`);
+  const { issues = [] } = await res.json();
+
+  return issues
+    .map((i) => {
+      const text = `${i.summary || ''} ${typeof i.description === 'string' ? i.description : ''}`;
+      const category = classifyViolation(text);
+      const street = String(i.address || '').split(',')[0].replace(new RegExp(`\\s+${loc.city}.*$`, 'i'), '');
+      return {
+        address: street.replace(/\s+/g, ' ').trim().toUpperCase(),
+        category,
+        description: (i.summary || 'Resident complaint').slice(0, 300),
+        status: i.status || null,
+        date: i.created_at || null,
+        source: 'SeeClickFix 311 reports'
+      };
+    })
+    .filter((v) => v.address && v.category !== 'other');
+}
+
 // Returns { available, source?, count?, byAddress?, message? } — byAddress is
 // keyed by normalized "123 MAIN ST" so results merge with the visual scan.
 async function getViolationsForZip(zip, city, state, loc) {
   try {
-    const violations = await fetchViolations(zip, city, state, loc);
-    if (!violations) {
+    let violations = await fetchViolations(zip, city, state, loc);
+    if (!violations) violations = await fetchSeeClickFix({ ...loc, city }).catch(() => null);
+    if (!violations || !violations.length) {
       return {
         available: false,
-        message: `No open-data code-violation source found for ${city}, ${state} yet — county-specific scraper can be added.`
+        message: `No code-violation records found for ${city}, ${state} — visual scoring only. A county-specific scraper can be added.`
       };
     }
 
