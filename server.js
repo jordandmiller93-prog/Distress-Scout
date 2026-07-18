@@ -653,10 +653,47 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
     const location = await areaScan.lookupZip(zip);
 
     // Violations lookup and address discovery run in parallel
-    const [addresses, violationData] = await Promise.all([
+    const [discovered, violationData] = await Promise.all([
       areaScan.discoverAddresses(location),
       violations.getViolationsForZip(zip, location.city, location.state, location)
     ]);
+
+    // Violation-first ordering: known code-violation properties (dangerous
+    // buildings, nuisance complaints, etc.) get scanned before the blind
+    // sweep, so real leads surface immediately instead of waiting on
+    // alphabetical luck. Properties with a violation record that OpenStreetMap
+    // never mapped are added too, using the violation's own coordinates,
+    // so a flagged property never gets missed just because it's not in OSM.
+    let addresses = discovered;
+    let violationOnlyCount = 0;
+    if (violationData.available) {
+      const knownAddrSet = new Set(discovered.map((a) => a.address.toUpperCase()));
+      const matched = [];
+      const unmatched = [];
+      for (const a of discovered) {
+        (knownAddrSet.has(a.address.toUpperCase()) && violationData.byAddress[a.address.toUpperCase()]
+          ? matched
+          : unmatched
+        ).push(a);
+      }
+      const violationOnly = [];
+      for (const [addr, vios] of Object.entries(violationData.byAddress)) {
+        if (knownAddrSet.has(addr)) continue;
+        const withCoords = vios.find((v) => v.lat && v.lng);
+        if (!withCoords) continue; // no coordinates — can't fetch imagery for it
+        violationOnly.push({
+          address: addr,
+          city: location.city,
+          state: location.state,
+          zip,
+          lat: withCoords.lat,
+          lng: withCoords.lng,
+          building: null
+        });
+      }
+      violationOnlyCount = violationOnly.length;
+      addresses = [...matched, ...violationOnly, ...unmatched];
+    }
 
     if (!addresses.length) {
       return res.status(404).json({
@@ -741,7 +778,11 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       scannedThisBatch: batch.length,
       nextOffset: Number(offset) + batch.length < addresses.length ? Number(offset) + batch.length : null,
       violationSource: violationData.available
-        ? { source: violationData.source, recordsInZip: violationData.count }
+        ? {
+            source: violationData.source,
+            recordsInZip: violationData.count,
+            addressesAddedFromViolationsOnly: violationOnlyCount
+          }
         : { message: violationData.message },
       streetViewEnabled: !!process.env.GOOGLE_MAPS_API_KEY,
       results,

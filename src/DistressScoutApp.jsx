@@ -647,9 +647,11 @@ export default function DistressScoutApp() {
         <main className="max-w-5xl mx-auto px-4 py-8">
           <div className="bg-white rounded-lg shadow p-6 mb-6">
             <p className="text-gray-600 mb-4">
-              Enter a ZIP code. Distress Scout sweeps every mapped address — satellite
-              {areaState.streetViewEnabled ? ' + street view' : ''} imagery scored by AI, cross-checked
-              against public code-violation records — and ranks the most distressed properties.
+              Enter a ZIP code. Distress Scout first pulls every county/city code-violation
+              record for the area (dangerous buildings, nuisance complaints) and scans those
+              addresses first, then sweeps the rest of the ZIP — satellite
+              {areaState.streetViewEnabled ? ' + street view' : ''} imagery scored by AI — so
+              known problem properties surface before anything else.
             </p>
             <div className="flex gap-3">
               <input

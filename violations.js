@@ -153,7 +153,9 @@ async function fetchViolations(zip, city, state, loc) {
         description: (description || 'Code violation').slice(0, 300),
         status: statusCol ? r[statusCol] || null : null,
         date: dateCol ? r[dateCol] || null : null,
-        source: `${dataset.name} (${dataset.domain})`
+        source: `${dataset.name} (${dataset.domain})`,
+        lat: latCol ? Number(r[latCol]) || null : null,
+        lng: lngCol ? Number(r[lngCol]) || null : null
       };
     });
 }
@@ -185,7 +187,9 @@ async function fetchSeeClickFix(loc) {
         description: (i.summary || 'Resident complaint').slice(0, 300),
         status: i.status || null,
         date: i.created_at || null,
-        source: 'SeeClickFix 311 reports'
+        source: 'SeeClickFix 311 reports',
+        lat: i.lat ?? null,
+        lng: i.lng ?? null
       };
     })
     .filter((v) => v.address && v.category !== 'other');
