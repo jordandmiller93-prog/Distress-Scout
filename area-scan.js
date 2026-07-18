@@ -186,17 +186,21 @@ if they look distressed. Return ONLY valid JSON:
   "confidence": "<low|medium|high — low if imagery is unclear or the property is hard to make out>"
 }
 
-From satellite look for: roof discoloration/holes, blue tarps, overgrown lots, debris piles, junk vehicles, missing shingles.
-From street view look for: boarded/broken windows, peeling paint, sagging porch, notices on the door, overgrowth, general abandonment. Also look for storefronts, signage, parking lots, or multiple unit entrances — these mean it is NOT single-family.
-Score conservatively: an ordinary lived-in house is 0-2. Only clear visible distress moves the score up.`
+From satellite look for: roof discoloration/holes/patching, blue tarps, overgrown or dead lawns, debris/junk piles, junk or inoperable vehicles, missing shingles, pool covered in algae, driveway/walkway cracking or heaving, detached structures in disrepair.
+From street view look for: boarded/broken/missing windows, peeling or mismatched paint, sagging porch/roofline, notices or liens posted on the door, overgrowth, damaged or missing gutters, deteriorated siding, broken fencing, unkempt landscaping compared to neighboring homes, general abandonment. Also look for storefronts, signage, parking lots, or multiple unit entrances — these mean it is NOT single-family.
+
+Look carefully — moderate deterioration (peeling paint on part of the house, a
+patchy/overgrown yard, a sagging gutter, a cracked driveway) is real distress
+and should score in the 3-6 range, not be waved off as "ordinary." Reserve 0-2
+only for houses that are genuinely well-kept with no visible issues. Reserve
+7-10 for severe cases (boarded up, collapsing, fire damage, condemned).
+Compare the house's upkeep to what a well-maintained home on the same street
+would look like — relative neglect is still a real signal.`
   });
 
   try {
-    // Haiku, not Opus: bulk visual triage (distressed vs. not) doesn't need
-    // frontier reasoning, and Area Scan runs this per-property across a
-    // whole ZIP — Opus here made testing burn through API credits fast.
     const message = await client.messages.create({
-      model: 'claude-haiku-4-5',
+      model: 'claude-opus-4-8',
       max_tokens: 512,
       messages: [{ role: 'user', content }]
     });
