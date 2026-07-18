@@ -160,8 +160,11 @@ Score conservatively: an ordinary lived-in house is 0-2. Only clear visible dist
   });
 
   try {
+    // Haiku, not Opus: bulk visual triage (distressed vs. not) doesn't need
+    // frontier reasoning, and Area Scan runs this per-property across a
+    // whole ZIP — Opus here made testing burn through API credits fast.
     const message = await client.messages.create({
-      model: 'claude-opus-4-8',
+      model: 'claude-haiku-4-5',
       max_tokens: 512,
       messages: [{ role: 'user', content }]
     });
