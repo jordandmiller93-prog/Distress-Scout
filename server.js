@@ -243,8 +243,21 @@ const TIERS = {
     exportLimit: 'unlimited',
     price: 2900, // $29.00 in cents
     stripeProductId: 'prod_distress_scout_premium'
+  },
+  owner: {
+    scansPerMonth: 100000,
+    storageLeads: 100000,
+    exportLimit: 'unlimited',
+    price: 0
   }
 };
+
+// The app's owner never pays or hits freemium caps. This is a limits-only
+// bypass — it still makes real, billed Anthropic API calls per scan.
+const OWNER_EMAILS = new Set(['jordan.d.miller93@gmail.com', 'jordan@distressscout.com']);
+function effectiveTier(user) {
+  return OWNER_EMAILS.has((user.email || '').toLowerCase()) ? 'owner' : user.tier;
+}
 
 // ============ AUTH ============
 function issueToken(user) {
@@ -305,10 +318,10 @@ app.post('/api/scan', authRequired, upload.single('image'), async (req, res) => 
 
     if (!req.file) return res.status(400).json({ error: 'Missing image' });
 
-    if (user.scansThisMonth >= TIERS[user.tier].scansPerMonth) {
+    if (user.scansThisMonth >= TIERS[effectiveTier(user)].scansPerMonth) {
       return res.status(429).json({
         error: 'Monthly scan limit reached',
-        limit: TIERS[user.tier].scansPerMonth,
+        limit: TIERS[effectiveTier(user)].scansPerMonth,
         tier: user.tier,
         upgradeUrl: '/pricing'
       });
@@ -342,7 +355,7 @@ app.post('/api/scan', authRequired, upload.single('image'), async (req, res) => 
       scanId,
       success: true,
       data: scan,
-      remaining: TIERS[user.tier].scansPerMonth - user.scansThisMonth - 1
+      remaining: TIERS[effectiveTier(user)].scansPerMonth - user.scansThisMonth - 1
     });
 
   } catch (error) {
@@ -359,10 +372,10 @@ app.post('/api/leads', authRequired, async (req, res) => {
 
   if (!scan || scan.userId !== user.userId) return res.status(404).json({ error: 'Scan not found' });
 
-  if (user.leadsStored >= TIERS[user.tier].storageLeads) {
+  if (user.leadsStored >= TIERS[effectiveTier(user)].storageLeads) {
     return res.status(429).json({
       error: 'Lead storage limit reached',
-      limit: TIERS[user.tier].storageLeads
+      limit: TIERS[effectiveTier(user)].storageLeads
     });
   }
 
@@ -628,10 +641,10 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       return res.status(400).json({ error: 'Enter a valid 5-digit ZIP code' });
     }
 
-    if (user.scansThisMonth + batchSize > TIERS[user.tier].scansPerMonth) {
+    if (user.scansThisMonth + batchSize > TIERS[effectiveTier(user)].scansPerMonth) {
       return res.status(429).json({
         error: 'Monthly scan limit reached',
-        limit: TIERS[user.tier].scansPerMonth,
+        limit: TIERS[effectiveTier(user)].scansPerMonth,
         tier: user.tier,
         upgradeUrl: '/pricing'
       });
@@ -700,7 +713,7 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       saved.push(scanId);
 
       const isDuplicate = leadAddresses.has(fullAddress.toUpperCase());
-      const underLimit = existingLeads.length + autoLeads < TIERS[user.tier].storageLeads;
+      const underLimit = existingLeads.length + autoLeads < TIERS[effectiveTier(user)].storageLeads;
       if (r.distressorScore >= 4 && !isDuplicate && underLimit) {
         const leadId = `lead_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
         await db.saveLead({ leadId, ...scan, status: 'new', addedAt: new Date().toISOString() });
@@ -726,7 +739,7 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       results,
       savedScanIds: saved,
       autoSavedLeads: autoLeads,
-      remaining: TIERS[user.tier].scansPerMonth - user.scansThisMonth - batch.length
+      remaining: TIERS[effectiveTier(user)].scansPerMonth - user.scansThisMonth - batch.length
     });
   } catch (error) {
     console.error('Area scan error:', error);
@@ -742,12 +755,12 @@ app.get('/api/stats', authRequired, async (req, res) => {
   res.json({
     tier: user.tier,
     scansThisMonth: user.scansThisMonth,
-    scansLimit: TIERS[user.tier].scansPerMonth,
+    scansLimit: TIERS[effectiveTier(user)].scansPerMonth,
     leadsGenerated: leads.length,
-    leadsLimit: TIERS[user.tier].storageLeads,
+    leadsLimit: TIERS[effectiveTier(user)].storageLeads,
     contactsFound: leads.filter(l => l.ownerInfo && l.ownerInfo.phone !== 'Pending skip trace...').length,
     exportsUsed: user.exportsUsed,
-    exportsLimit: TIERS[user.tier].exportLimit
+    exportsLimit: TIERS[effectiveTier(user)].exportLimit
   });
 });
 
