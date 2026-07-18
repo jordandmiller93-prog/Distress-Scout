@@ -1,3 +1,244 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ============================================================
+   DISTRESS SCOUT — HOLOGRAPHIC OVERRIDE THEME
+   Re-skins the existing Tailwind utility classes in place, so
+   every screen gets the new look with zero component rewrites.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap');
+
+:root {
+  --holo-void: #05060f;
+  --holo-void-2: #0a0e27;
+  --holo-panel: rgba(13, 20, 45, 0.55);
+  --holo-panel-solid: #0d1230;
+  --holo-border: rgba(56, 232, 255, 0.35);
+  --holo-border-bright: rgba(56, 232, 255, 0.75);
+  --holo-cyan: #2ee6ff;
+  --holo-magenta: #ff3df0;
+  --holo-violet: #9b6bff;
+  --holo-green: #39ffb0;
+  --holo-amber: #ffc23a;
+  --holo-red: #ff3d6a;
+  --holo-text: #eaf7ff;
+  --holo-text-dim: #8fb2d9;
+  --holo-text-faint: #5b7699;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--holo-cyan) transparent;
+}
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--holo-void); }
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--holo-cyan), var(--holo-magenta));
+  border-radius: 6px;
+}
+
+html, body, #root {
+  min-height: 100%;
+  background: var(--holo-void);
+}
+
+body {
+  font-family: 'Share Tech Mono', ui-monospace, monospace;
+  color: var(--holo-text);
+  background:
+    radial-gradient(ellipse 80% 50% at 20% -10%, rgba(46, 230, 255, 0.15), transparent 60%),
+    radial-gradient(ellipse 80% 50% at 100% 0%, rgba(155, 107, 255, 0.15), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 50% 100%, rgba(255, 61, 240, 0.10), transparent 60%),
+    linear-gradient(180deg, var(--holo-void) 0%, var(--holo-void-2) 100%);
+  background-attachment: fixed;
+  position: relative;
+}
+
+/* Animated grid + scanline overlay — pure CSS, no images/assets needed */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(46, 230, 255, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(46, 230, 255, 0.06) 1px, transparent 1px);
+  background-size: 42px 42px;
+  animation: holo-grid-drift 30s linear infinite;
+}
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.02) 0px,
+    rgba(255, 255, 255, 0.02) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: overlay;
+}
+@keyframes holo-grid-drift {
+  from { background-position: 0 0, 0 0; }
+  to { background-position: 42px 42px, 42px 42px; }
+}
+#root { position: relative; z-index: 2; }
+
+/* ---------- Headings get the holographic gradient treatment ---------- */
+h1, h2,
+.text-2xl.font-bold.text-gray-900,
+.text-xl.font-bold.text-gray-900,
+.text-3xl.font-bold.text-gray-900 {
+  font-family: 'Orbitron', 'Share Tech Mono', sans-serif;
+  background: linear-gradient(90deg, var(--holo-cyan), var(--holo-violet) 50%, var(--holo-magenta));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 0.02em;
+  filter: drop-shadow(0 0 12px rgba(46, 230, 255, 0.35));
+}
+
+/* ---------- Base surfaces: panels, headers, page backgrounds ---------- */
+.bg-gray-50 { background: transparent !important; }
+.bg-white,
+.bg-gray-100 {
+  background: var(--holo-panel) !important;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--holo-border);
+  box-shadow: 0 0 24px rgba(46, 230, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.shadow, .shadow-sm, .shadow-lg {
+  box-shadow: 0 0 28px rgba(46, 230, 255, 0.12), 0 8px 24px rgba(0, 0, 0, 0.5) !important;
+}
+.hover\:shadow-lg:hover {
+  box-shadow: 0 0 40px rgba(46, 230, 255, 0.28), 0 12px 32px rgba(0, 0, 0, 0.6) !important;
+  transform: translateY(-1px);
+}
+.border, .border-t, .border-b,
+.border-gray-100, .border-gray-200, .border-gray-300 {
+  border-color: var(--holo-border) !important;
+}
+.divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--holo-border) !important; }
+
+/* ---------- Text colors ---------- */
+.text-gray-900 { color: var(--holo-text) !important; }
+.text-gray-700, .text-gray-800 { color: var(--holo-text-dim) !important; }
+.text-gray-600 { color: var(--holo-text-dim) !important; }
+.text-gray-500 { color: var(--holo-text-faint) !important; }
+.text-gray-300 { color: var(--holo-text-faint) !important; }
+
+/* ---------- Primary action buttons -> holographic gradient ---------- */
+.bg-blue-600 {
+  background: linear-gradient(135deg, var(--holo-cyan), var(--holo-violet)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 18px rgba(46, 230, 255, 0.45);
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.4);
+  transition: filter 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.hover\:bg-blue-700:hover {
+  filter: brightness(1.25) saturate(1.2);
+  box-shadow: 0 0 32px rgba(46, 230, 255, 0.7);
+  transform: translateY(-1px);
+}
+
+.bg-indigo-600 {
+  background: linear-gradient(135deg, var(--holo-violet), var(--holo-magenta)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 18px rgba(155, 107, 255, 0.45);
+}
+.hover\:bg-indigo-700:hover {
+  filter: brightness(1.25) saturate(1.2);
+  box-shadow: 0 0 32px rgba(155, 107, 255, 0.7);
+}
+
+.bg-green-600 {
+  background: linear-gradient(135deg, var(--holo-green), #17a673) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 18px rgba(57, 255, 176, 0.4);
+}
+.hover\:bg-green-700:hover { filter: brightness(1.2); box-shadow: 0 0 30px rgba(57, 255, 176, 0.65); }
+
+.bg-purple-600, .from-purple-500.to-purple-700 {
+  background: linear-gradient(135deg, var(--holo-violet), var(--holo-magenta)) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 0 18px rgba(255, 61, 240, 0.4);
+}
+.hover\:bg-purple-700:hover { filter: brightness(1.2); box-shadow: 0 0 30px rgba(255, 61, 240, 0.65); }
+
+.bg-red-600 { background: linear-gradient(135deg, var(--holo-red), #a3123a) !important; }
+.hover\:bg-red-700:hover { filter: brightness(1.2); }
+
+/* ---------- Status / risk pill badges: translucent neon glass ---------- */
+.bg-red-100 { background: rgba(255, 61, 106, 0.14) !important; border: 1px solid rgba(255, 61, 106, 0.5); }
+.text-red-800 { color: #ff8fa8 !important; }
+.bg-yellow-100 { background: rgba(255, 194, 58, 0.14) !important; border: 1px solid rgba(255, 194, 58, 0.5); }
+.text-yellow-800 { color: #ffd479 !important; }
+.bg-green-100 { background: rgba(57, 255, 176, 0.12) !important; border: 1px solid rgba(57, 255, 176, 0.5); }
+.text-green-800 { color: #7effcf !important; }
+.bg-blue-100 { background: rgba(46, 230, 255, 0.12) !important; border: 1px solid rgba(46, 230, 255, 0.5); }
+.text-blue-800 { color: #8fe9ff !important; }
+.bg-purple-100 { background: rgba(155, 107, 255, 0.14) !important; border: 1px solid rgba(155, 107, 255, 0.5); }
+.text-purple-800 { color: #cbb2ff !important; }
+.bg-orange-100 { background: rgba(255, 176, 32, 0.14) !important; border: 1px solid rgba(255, 176, 32, 0.5); }
+.text-orange-800 { color: #ffcb7a !important; }
+.bg-gray-100.text-gray-800, .bg-gray-100.text-gray-500 {
+  background: rgba(143, 178, 217, 0.1) !important;
+  border: 1px solid rgba(143, 178, 217, 0.35);
+}
+
+.text-blue-600 { color: var(--holo-cyan) !important; }
+.hover\:text-blue-900:hover { color: #bff5ff !important; filter: drop-shadow(0 0 6px var(--holo-cyan)); }
+.text-green-600 { color: var(--holo-green) !important; }
+.text-purple-600 { color: var(--holo-violet) !important; }
+.text-orange-700 { color: #ffb45c !important; }
+
+/* ---------- Inputs ---------- */
+input, select, textarea {
+  background: rgba(5, 8, 20, 0.6) !important;
+  color: var(--holo-text) !important;
+  border-color: var(--holo-border) !important;
+}
+input::placeholder { color: var(--holo-text-faint); }
+.focus\:ring-blue-500:focus, .focus\:ring-2:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(46, 230, 255, 0.25) !important;
+  border-color: var(--holo-border-bright) !important;
+}
+
+/* ---------- Table rows ---------- */
+.hover\:bg-gray-50:hover { background: rgba(46, 230, 255, 0.06) !important; }
+thead.bg-gray-50 { background: rgba(46, 230, 255, 0.05) !important; }
+
+/* ---------- Misc icon / hover chrome ---------- */
+.hover\:bg-gray-100:hover { background: rgba(46, 230, 255, 0.1) !important; }
+.bg-gradient-to-br { box-shadow: 0 0 24px rgba(155, 107, 255, 0.4) !important; }
+.from-blue-600.to-blue-900 {
+  background: radial-gradient(ellipse 120% 90% at 50% -10%, rgba(46, 230, 255, 0.25), transparent 55%),
+              linear-gradient(160deg, var(--holo-void-2) 0%, var(--holo-void) 100%) !important;
+}
+.from-purple-500.to-purple-700 {
+  background: linear-gradient(135deg, var(--holo-violet), var(--holo-magenta)) !important;
+}
+.shadow-2xl {
+  box-shadow: 0 0 60px rgba(46, 230, 255, 0.25), 0 0 120px rgba(155, 107, 255, 0.15) !important;
+}
+
+/* Login card icon + logomark glow */
+.text-blue-600.mr-2 {
+  color: var(--holo-cyan) !important;
+  filter: drop-shadow(0 0 10px var(--holo-cyan));
+}
+
+/* Subtle pulse on the primary CTA-style buttons for that "alive" HUD feel */
+@keyframes holo-pulse {
+  0%, 100% { box-shadow: 0 0 18px rgba(46, 230, 255, 0.45); }
+  50% { box-shadow: 0 0 30px rgba(46, 230, 255, 0.7); }
+}
+button.bg-blue-600:not(:disabled) { animation: holo-pulse 3.5s ease-in-out infinite; }
