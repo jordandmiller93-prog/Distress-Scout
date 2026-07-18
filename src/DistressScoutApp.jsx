@@ -56,11 +56,23 @@ export default function DistressScoutApp() {
     premium: { scansPerMonth: 500, storageLeads: 5000, exportLimit: 'unlimited' }
   };
 
-  const authFetch = (path, options = {}) =>
-    fetch(`${API_URL}${path}`, {
+  const authFetch = async (path, options = {}) => {
+    const res = await fetch(`${API_URL}${path}`, {
       ...options,
       headers: { ...(options.headers || {}), Authorization: `Bearer ${token || localStorage.getItem('ds_token')}` }
     });
+    // Session died server-side (expired token or account no longer exists):
+    // send the user back to login instead of failing on every action.
+    if (res.status === 401) {
+      localStorage.removeItem('ds_token');
+      setToken(null);
+      setUser(null);
+      setView('login');
+      alert('Your session expired — please log in again (or sign up if your account is new).');
+      throw new Error('Session expired');
+    }
+    return res;
+  };
 
   const loadWorkspace = async (authToken) => {
     const headers = { Authorization: `Bearer ${authToken}` };
@@ -108,15 +120,23 @@ export default function DistressScoutApp() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        alert(data.error || `${mode === 'signup' ? 'Signup' : 'Login'} failed`);
+        alert(data.error || `${mode === 'signup' ? 'Signup' : 'Login'} failed (server said ${res.status})`);
         return;
       }
 
       localStorage.setItem('ds_token', data.token);
       setToken(data.token);
-      await loadWorkspace(data.token);
+      try {
+        await loadWorkspace(data.token);
+      } catch {
+        alert('Logged in, but loading your workspace failed — please refresh the page.');
+      }
     } catch (err) {
-      alert(`Could not reach the Distress Scout API at ${API_URL}. Is the backend running? (npm run dev)`);
+      alert(
+        process.env.NODE_ENV === 'production'
+          ? 'Network error reaching Distress Scout — check your connection and try again.'
+          : `Could not reach the Distress Scout API at ${API_URL}. Is the backend running? (npm run dev)`
+      );
     }
   };
 
