@@ -26,8 +26,36 @@ async function lookupZip(zip) {
   };
 }
 
-// Pull every element tagged with a house number + this postcode from OpenStreetMap.
-// Sorted deterministically so offset-based paging is stable between requests.
+// OSM building/tag values that mean "not a single-family home" — checked
+// before any imagery is fetched or any AI call is made, so commercial
+// buildings never cost a cent to filter out.
+const NON_RESIDENTIAL_BUILDING = new Set([
+  'commercial', 'retail', 'industrial', 'warehouse', 'office', 'civic', 'public',
+  'hospital', 'school', 'university', 'college', 'kindergarten', 'church', 'mosque',
+  'synagogue', 'temple', 'cathedral', 'chapel', 'hotel', 'motel', 'supermarket',
+  'kiosk', 'garage', 'garages', 'service', 'hangar', 'grandstand', 'stadium',
+  'train_station', 'transportation', 'parking', 'government', 'fire_station',
+  'gatehouse', 'apartments', 'dormitory', 'bunker', 'greenhouse'
+]);
+const RESIDENTIAL_BUILDING = new Set([
+  'house', 'detached', 'semidetached_house', 'terrace', 'bungalow', 'residential',
+  'cabin', 'static_caravan', 'hut', 'farm', 'yes'
+]);
+
+function isSingleFamilyResidential(tags) {
+  const building = (tags.building || '').toLowerCase();
+  // Any of these tags present means a business/institution occupies the address.
+  const commercialSignal = ['shop', 'office', 'amenity', 'craft', 'healthcare', 'tourism', 'leisure']
+    .some((k) => tags[k]);
+  if (commercialSignal || NON_RESIDENTIAL_BUILDING.has(building)) return false;
+  // No building tag at all is the common case for plain US address nodes —
+  // treat as residential. An unrecognized building value is excluded to be safe.
+  return !building || RESIDENTIAL_BUILDING.has(building);
+}
+
+// Pull every element tagged with a house number + this postcode from OpenStreetMap,
+// keeping only ones that look like single-family homes. Sorted deterministically
+// so offset-based paging is stable between requests.
 async function discoverAddresses(loc) {
   const d = 0.12; // ~8 mile box around the zip centroid; postcode tag does the real filtering
   const bbox = `${loc.lat - d},${loc.lng - d},${loc.lat + d},${loc.lng + d}`;
@@ -57,6 +85,7 @@ out center 2000;`;
         const lat = el.lat ?? el.center?.lat;
         const lng = el.lon ?? el.center?.lon;
         if (!lat || !lng || !tags['addr:street']) continue;
+        if (!isSingleFamilyResidential(tags)) continue;
 
         const address = `${tags['addr:housenumber']} ${tags['addr:street']}`;
         const key = address.toLowerCase();
@@ -144,10 +173,13 @@ async function scoreProperty(client, prop) {
     type: 'text',
     text: `Property: ${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}
 
-You are scanning for VISIBLE property distress that signals a motivated seller. Return ONLY valid JSON:
+This app only wants SINGLE-FAMILY RESIDENTIAL houses — no businesses, apartment
+buildings, churches, schools, or other commercial/institutional structures, even
+if they look distressed. Return ONLY valid JSON:
 
 {
-  "distressScore": <0-10 float; 0 = pristine, 10 = condemned>,
+  "propertyType": "<single_family | multi_family | commercial | institutional | vacant_lot | unclear>",
+  "distressScore": <0-10 float; 0 = pristine, 10 = condemned. Use 0 if propertyType is not single_family>,
   "riskLevel": "<low|medium|high>",
   "indicators": [<detected issues, e.g. "tarped_roof", "overgrown_yard", "boarded_windows", "junk_vehicles", "fire_damage", "collapsed_structure">],
   "summary": "<one sentence on what you see>",
@@ -155,7 +187,7 @@ You are scanning for VISIBLE property distress that signals a motivated seller. 
 }
 
 From satellite look for: roof discoloration/holes, blue tarps, overgrown lots, debris piles, junk vehicles, missing shingles.
-From street view look for: boarded/broken windows, peeling paint, sagging porch, notices on the door, overgrowth, general abandonment.
+From street view look for: boarded/broken windows, peeling paint, sagging porch, notices on the door, overgrowth, general abandonment. Also look for storefronts, signage, parking lots, or multiple unit entrances — these mean it is NOT single-family.
 Score conservatively: an ordinary lived-in house is 0-2. Only clear visible distress moves the score up.`
   });
 

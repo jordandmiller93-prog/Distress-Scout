@@ -668,8 +668,16 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
     const batch = addresses.slice(Number(offset), Number(offset) + batchSize);
     const scored = await areaScan.scoreBatch(client, batch);
 
+    // Belt-and-suspenders: OSM tags already filtered out obvious commercial
+    // addresses before scanning; this drops anything the AI itself flagged
+    // as non-single-family (catches mistagged OSM data, e.g. a strip mall
+    // with no distinguishing building tag).
+    const singleFamilyOnly = scored.filter(
+      (p) => !p.scored || !p.propertyType || p.propertyType === 'single_family' || p.propertyType === 'unclear'
+    );
+
     // Merge layers: violations matched by normalized street address
-    const results = scored.map((p) => {
+    const results = singleFamilyOnly.map((p) => {
       const key = p.address.toUpperCase();
       const propViolations = violationData.available
         ? violationData.byAddress[key] || []
