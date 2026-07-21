@@ -6,10 +6,15 @@
 //   - Esri World Imagery  satellite tile per property (no key required)
 //   - Google Street View  curb-level photo (requires GOOGLE_MAPS_API_KEY)
 
+// Overpass is a free, shared public service that occasionally 504s under
+// load — more mirrors + a retry pass materially cuts the failure rate.
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter'
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.openstreetmap.ru/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
 ];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function lookupZip(zip) {
   const res = await fetch(`https://api.zippopotam.us/us/${zip}`);
@@ -60,56 +65,76 @@ async function discoverAddresses(loc) {
   const d = 0.12; // ~8 mile box around the zip centroid; postcode tag does the real filtering
   const bbox = `${loc.lat - d},${loc.lng - d},${loc.lat + d},${loc.lng + d}`;
   const query = `
-[out:json][timeout:40];
+[out:json][timeout:8];
 nwr["addr:housenumber"]["addr:postcode"="${loc.zip}"](${bbox});
 out center 2000;`;
 
+  // Hard overall deadline: Vercel's function has a 60s cap and imagery/AI
+  // scoring still needs to run after this, so give up cleanly well before
+  // that rather than let a slow mirror drag the whole request past the
+  // platform's own hard timeout (which produces an ugly, unrecoverable error
+  // instead of the friendly one below).
+  const deadline = Date.now() + 25000;
   let lastError;
-  for (const endpoint of OVERPASS_ENDPOINTS) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'DistressScout/1.0 (property research; contact: support@distressscout.com)'
-        },
-        body: `data=${encodeURIComponent(query)}`
-      });
-      if (!res.ok) throw new Error(`Overpass ${res.status}`);
-      const data = await res.json();
+  for (let pass = 0; pass < 2 && Date.now() < deadline; pass++) {
+    if (pass > 0) await sleep(1000); // brief backoff before the retry pass
+    for (const endpoint of OVERPASS_ENDPOINTS) {
+      if (Date.now() >= deadline) break;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 9000); // fail fast per mirror
+        let res;
+        try {
+          res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'User-Agent': 'DistressScout/1.0 (property research; contact: support@distressscout.com)'
+            },
+            body: `data=${encodeURIComponent(query)}`,
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timer);
+        }
+        if (!res.ok) throw new Error(`Overpass ${res.status}`);
+        const data = await res.json();
 
-      const seen = new Set();
-      const addresses = [];
-      for (const el of data.elements || []) {
-        const tags = el.tags || {};
-        const lat = el.lat ?? el.center?.lat;
-        const lng = el.lon ?? el.center?.lon;
-        if (!lat || !lng || !tags['addr:street']) continue;
-        if (!isSingleFamilyResidential(tags)) continue;
+        const seen = new Set();
+        const addresses = [];
+        for (const el of data.elements || []) {
+          const tags = el.tags || {};
+          const lat = el.lat ?? el.center?.lat;
+          const lng = el.lon ?? el.center?.lon;
+          if (!lat || !lng || !tags['addr:street']) continue;
+          if (!isSingleFamilyResidential(tags)) continue;
 
-        const address = `${tags['addr:housenumber']} ${tags['addr:street']}`;
-        const key = address.toLowerCase();
-        if (seen.has(key)) continue;
-        seen.add(key);
+          const address = `${tags['addr:housenumber']} ${tags['addr:street']}`;
+          const key = address.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
 
-        addresses.push({
-          address,
-          city: tags['addr:city'] || loc.city,
-          state: loc.state,
-          zip: loc.zip,
-          lat,
-          lng,
-          building: tags.building || null
-        });
+          addresses.push({
+            address,
+            city: tags['addr:city'] || loc.city,
+            state: loc.state,
+            zip: loc.zip,
+            lat,
+            lng,
+            building: tags.building || null
+          });
+        }
+
+        addresses.sort((a, b) => a.address.localeCompare(b.address));
+        return addresses;
+      } catch (err) {
+        lastError = err.name === 'AbortError' ? new Error('Overpass timeout') : err;
       }
-
-      addresses.sort((a, b) => a.address.localeCompare(b.address));
-      return addresses;
-    } catch (err) {
-      lastError = err;
     }
   }
-  throw new Error(`Address discovery failed: ${lastError?.message}`);
+  throw new Error(
+    `Address lookup service is temporarily overloaded (${lastError?.message || 'unknown error'}). Please try this ZIP again in a moment.`
+  );
 }
 
 // ~90m-wide satellite crop centered on the parcel. Keyless.
