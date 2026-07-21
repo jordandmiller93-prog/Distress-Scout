@@ -611,13 +611,26 @@ export default function DistressScoutApp() {
                             {lead.status}
                           </span>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-6 py-4 whitespace-nowrap">
                           <button
                             onClick={() => openLeadDetails(lead)}
-                            className="text-blue-600 hover:text-blue-900 text-sm font-bold"
+                            className="text-blue-600 hover:text-blue-900 text-sm font-bold mr-3"
                           >
                             View
                           </button>
+                          <a
+                            href={
+                              lead.lat && lead.lng
+                                ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${lead.lat},${lead.lng}`
+                                : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lead.address)}`
+                            }
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-blue-600 hover:text-blue-900 text-sm font-bold inline-flex items-center"
+                          >
+                            <MapPin className="w-3.5 h-3.5 mr-1" /> Map
+                          </a>
                         </td>
                       </tr>
                     ))}
