@@ -917,7 +917,33 @@ export default function DistressScoutApp() {
             {/* Property Info */}
             <div className="md:col-span-2 space-y-6">
               <div className="bg-white rounded-lg shadow p-6">
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">{selectedLead.address}</h2>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedLead.address}</h2>
+                <div className="flex gap-4 mb-4">
+                  <a
+                    href={
+                      selectedLead.lat && selectedLead.lng
+                        ? `https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=${selectedLead.lat},${selectedLead.lng}`
+                        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedLead.address)}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 hover:text-blue-900 text-sm font-bold flex items-center"
+                  >
+                    <MapPin className="w-4 h-4 mr-1" /> Street View ↗
+                  </a>
+                  <a
+                    href={
+                      selectedLead.lat && selectedLead.lng
+                        ? `https://www.google.com/maps/@${selectedLead.lat},${selectedLead.lng},19z/data=!3m1!1e3`
+                        : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selectedLead.address)}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 hover:text-blue-900 text-sm font-bold flex items-center"
+                  >
+                    <Map className="w-4 h-4 mr-1" /> Satellite View ↗
+                  </a>
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <p className="text-gray-600 text-sm">Distress Score</p>
