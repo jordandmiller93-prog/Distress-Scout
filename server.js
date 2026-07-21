@@ -650,13 +650,21 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       });
     }
 
-    const location = await areaScan.lookupZip(zip);
-
-    // Violations lookup and address discovery run in parallel
-    const [discovered, violationData] = await Promise.all([
-      areaScan.discoverAddresses(location),
-      violations.getViolationsForZip(zip, location.city, location.state, location)
-    ]);
+    // Address discovery (Overpass) and violation lookups (Socrata/SeeClickFix)
+    // are slow and occasionally flaky external calls — cache the raw result
+    // per ZIP so every "Scan Next 10" click doesn't re-fetch from scratch.
+    let cached = await db.getZipCache(zip);
+    let location, discovered, violationData;
+    if (cached) {
+      ({ location, discovered, violationData } = cached);
+    } else {
+      location = await areaScan.lookupZip(zip);
+      [discovered, violationData] = await Promise.all([
+        areaScan.discoverAddresses(location),
+        violations.getViolationsForZip(zip, location.city, location.state, location)
+      ]);
+      await db.saveZipCache(zip, { location, discovered, violationData });
+    }
 
     // Violation-first ordering: known code-violation properties (dangerous
     // buildings, nuisance complaints, etc.) get scanned before the blind
@@ -666,7 +674,11 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
     // so a flagged property never gets missed just because it's not in OSM.
     let addresses = discovered;
     let violationOnlyCount = 0;
-    if (violationData.available) {
+    // Multi-family-only sources (e.g. NYC's Housing Maintenance Code, which
+    // legally only covers 3+ unit buildings) never contain a single-family
+    // match — using them to prioritize would burn real AI scans on properties
+    // already known to be the wrong type, so they're skipped entirely here.
+    if (violationData.available && violationData.residentialType !== 'multi_family') {
       const knownAddrSet = new Set(discovered.map((a) => a.address.toUpperCase()));
       const matched = [];
       const unmatched = [];
@@ -716,7 +728,7 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
     // Merge layers: violations matched by normalized street address
     const results = singleFamilyOnly.map((p) => {
       const key = p.address.toUpperCase();
-      const propViolations = violationData.available
+      const propViolations = violationData.available && violationData.residentialType !== 'multi_family'
         ? violationData.byAddress[key] || []
         : [];
       return {
@@ -777,12 +789,22 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       offset: Number(offset),
       scannedThisBatch: batch.length,
       nextOffset: Number(offset) + batch.length < addresses.length ? Number(offset) + batch.length : null,
+      note: results.length === 0 && batch.length > 0
+        ? `Scanned ${batch.length} properties — none were single-family homes (commercial, multi-unit, or institutional). Try "Scan Next 10" to keep going.`
+        : null,
       violationSource: violationData.available
-        ? {
-            source: violationData.source,
-            recordsInZip: violationData.count,
-            addressesAddedFromViolationsOnly: violationOnlyCount
-          }
+        ? violationData.residentialType === 'multi_family'
+          ? {
+              source: violationData.source,
+              recordsInZip: violationData.count,
+              addressesAddedFromViolationsOnly: 0,
+              message: `${violationData.source} only covers multi-unit buildings, so it isn't used to prioritize single-family scans here.`
+            }
+          : {
+              source: violationData.source,
+              recordsInZip: violationData.count,
+              addressesAddedFromViolationsOnly: violationOnlyCount
+            }
         : { message: violationData.message },
       streetViewEnabled: !!process.env.GOOGLE_MAPS_API_KEY,
       results,

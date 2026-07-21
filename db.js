@@ -53,10 +53,17 @@ const SCHEMA = `
     transcript      TEXT,
     created_at      TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS zip_cache (
+    zip        TEXT PRIMARY KEY,
+    data       TEXT NOT NULL,
+    cached_at  TEXT NOT NULL DEFAULT ''
+  );
   CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id);
   CREATE INDEX IF NOT EXISTS idx_scans_user ON scans(user_id);
   CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
 `;
+
+const ZIP_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours — address/violation data barely changes hour to hour
 
 const now = () => new Date().toISOString();
 
@@ -232,5 +239,23 @@ module.exports = {
       }
     }
     return null;
+  },
+
+  // Area Scan address discovery + violation lookups hit slow/flaky external
+  // APIs (Overpass, Socrata) — cache the raw result per ZIP so repeat scans
+  // and "Scan Next 10" pagination don't re-fetch them every request.
+  async getZipCache(zip) {
+    const { rows } = await query('SELECT data, cached_at FROM zip_cache WHERE zip = $1', [zip]);
+    if (!rows[0]) return null;
+    if (Date.now() - new Date(rows[0].cached_at).getTime() > ZIP_CACHE_TTL_MS) return null;
+    return JSON.parse(rows[0].data);
+  },
+
+  async saveZipCache(zip, data) {
+    await query(
+      `INSERT INTO zip_cache (zip, data, cached_at) VALUES ($1, $2, $3)
+       ON CONFLICT (zip) DO UPDATE SET data = EXCLUDED.data, cached_at = EXCLUDED.cached_at`,
+      [zip, JSON.stringify(data), now()]
+    );
   }
 };

@@ -46,7 +46,7 @@ export default function DistressScoutApp() {
   const [areaZip, setAreaZip] = useState('');
   const [areaState, setAreaState] = useState({
     running: false, location: null, total: 0, nextOffset: null,
-    results: [], violationSource: null, streetViewEnabled: false, error: null
+    results: [], violationSource: null, streetViewEnabled: false, error: null, note: null
   });
   const mapRef = useRef(null);
 
@@ -264,6 +264,7 @@ export default function DistressScoutApp() {
         nextOffset: data.nextOffset,
         violationSource: data.violationSource,
         streetViewEnabled: data.streetViewEnabled,
+        note: data.note || null,
         results: [...(offset === 0 ? [] : s.results), ...data.results]
           .sort((a, b) => b.distressorScore - a.distressorScore)
       }));
@@ -687,6 +688,9 @@ export default function DistressScoutApp() {
             </div>
             {areaState.error && (
               <p className="mt-3 text-red-600 flex items-center"><AlertCircle className="w-4 h-4 mr-2" />{areaState.error}</p>
+            )}
+            {areaState.note && !areaState.running && (
+              <p className="mt-3 text-yellow-700 flex items-center"><AlertCircle className="w-4 h-4 mr-2" />{areaState.note}</p>
             )}
             {areaState.running && (
               <p className="mt-3 text-gray-500 animate-pulse">

@@ -109,8 +109,9 @@ function pickColumn(columns, patterns) {
 // ---------------------------------------------------------------------------
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim().toUpperCase();
 
-function socrataEntry({ domain, id, name, buildAddress, buildDescription, statusCol, dateCol, zipWhere, latCol, lngCol }) {
+function socrataEntry({ domain, id, name, buildAddress, buildDescription, statusCol, dateCol, zipWhere, latCol, lngCol, residentialType }) {
   return {
+    residentialType: residentialType || 'single_family', // 'multi_family' = source is legally multi-unit-only (e.g. NYC HMC); don't prioritize/spend scans on it for an SFR-only product
     async fetch(zip, loc) {
       const params = new URLSearchParams({ $limit: '2000' });
       if (dateCol) params.set('$order', `${dateCol} DESC`);
@@ -215,7 +216,12 @@ const nyc = socrataEntry({
   buildAddress: (r) => [r.housenumber, r.streetname].filter(Boolean).join(' '),
   buildDescription: (r) => r.novdescription,
   statusCol: 'currentstatus', dateCol: 'inspectiondate',
-  zipWhere: (zip) => `zip = '${zip}'`
+  zipWhere: (zip) => `zip = '${zip}'`,
+  // NYC's Housing Maintenance Code legally only applies to buildings with
+  // 3+ units — every match here is structurally ineligible for an SFR-only
+  // product, so don't let it drive scan priority (would burn real AI calls
+  // scoring properties we already know are the wrong type).
+  residentialType: 'multi_family'
 });
 
 const KNOWN_JURISDICTIONS = {
@@ -367,7 +373,8 @@ async function getViolationsForZip(zip, city, state, loc) {
       available: true,
       source: violations[0]?.source || 'Socrata open data',
       count: violations.length,
-      byAddress
+      byAddress,
+      residentialType: known?.residentialType || 'single_family'
     };
   } catch (err) {
     return { available: false, message: `Violation lookup failed: ${err.message}` };
