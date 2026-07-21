@@ -715,7 +715,24 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
     }
 
     const batch = addresses.slice(Number(offset), Number(offset) + batchSize);
-    const scored = await areaScan.scoreBatch(client, batch);
+
+    // AI photo analysis is shared across every account: if any user has
+    // already scored this exact house in the last 30 days, reuse it instead
+    // of paying Anthropic again. Real savings — neighboring ZIPs overlap
+    // heavily, so the same houses turn up across multiple people's scans.
+    const propKey = (p) => `${p.address}, ${p.city}, ${p.state}`.toUpperCase();
+    const cachedScores = await Promise.all(batch.map((p) => db.getPropertyScanCache(propKey(p))));
+    const toScore = batch.filter((_, i) => !cachedScores[i]);
+    const freshlyScored = toScore.length ? await areaScan.scoreBatch(client, toScore) : [];
+
+    let freshIdx = 0;
+    const scored = batch.map((p, i) => (cachedScores[i] ? { ...p, ...cachedScores[i] } : freshlyScored[freshIdx++]));
+
+    // Cache every freshly-scored result (skip ones with no imagery — nothing
+    // useful to reuse) so the next scan of this house, by anyone, is free.
+    await Promise.all(
+      scored.map((p, i) => (!cachedScores[i] && p.scored ? db.savePropertyScanCache(propKey(p), p) : null))
+    );
 
     // Belt-and-suspenders: OSM tags already filtered out obvious commercial
     // addresses before scanning; this drops anything the AI itself flagged
@@ -780,11 +797,14 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       }
     }
 
-    for (let i = 0; i < batch.length; i++) await db.incrementScans(user.userId);
+    // Only charge the user's monthly quota for properties actually scored
+    // fresh — a cache hit cost nothing, so it shouldn't count against them.
+    for (let i = 0; i < toScore.length; i++) await db.incrementScans(user.userId);
 
     res.json({
       success: true,
       location,
+      scannedFromCache: batch.length - toScore.length,
       totalAddresses: addresses.length,
       offset: Number(offset),
       scannedThisBatch: batch.length,
@@ -810,7 +830,7 @@ app.post('/api/area-scan', authRequired, async (req, res) => {
       results,
       savedScanIds: saved,
       autoSavedLeads: autoLeads,
-      remaining: TIERS[effectiveTier(user)].scansPerMonth - user.scansThisMonth - batch.length
+      remaining: TIERS[effectiveTier(user)].scansPerMonth - user.scansThisMonth - toScore.length
     });
   } catch (error) {
     console.error('Area scan error:', error);

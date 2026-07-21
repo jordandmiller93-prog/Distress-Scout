@@ -58,12 +58,18 @@ const SCHEMA = `
     data       TEXT NOT NULL,
     cached_at  TEXT NOT NULL DEFAULT ''
   );
+  CREATE TABLE IF NOT EXISTS property_scan_cache (
+    property_key TEXT PRIMARY KEY,
+    data         TEXT NOT NULL,
+    cached_at    TEXT NOT NULL DEFAULT ''
+  );
   CREATE INDEX IF NOT EXISTS idx_leads_user ON leads(user_id);
   CREATE INDEX IF NOT EXISTS idx_scans_user ON scans(user_id);
   CREATE INDEX IF NOT EXISTS idx_calls_lead ON calls(lead_id);
 `;
 
 const ZIP_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours — address/violation data barely changes hour to hour
+const PROPERTY_SCAN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — a house's condition doesn't change overnight
 
 const now = () => new Date().toISOString();
 
@@ -257,5 +263,32 @@ module.exports = {
        ON CONFLICT (zip) DO UPDATE SET data = EXCLUDED.data, cached_at = EXCLUDED.cached_at`,
       [zip, JSON.stringify(data), now()]
     );
+  },
+
+  // AI photo analysis for a specific house — shared across every account, not
+  // just every ZIP. Neighboring ZIPs overlap heavily (same physical houses
+  // turn up in more than one ZIP's search radius), and different users
+  // scanning the same area shouldn't each pay to re-analyze the same photos.
+  async getPropertyScanCache(propertyKey) {
+    try {
+      const { rows } = await query('SELECT data, cached_at FROM property_scan_cache WHERE property_key = $1', [propertyKey]);
+      if (!rows[0]) return null;
+      if (Date.now() - new Date(rows[0].cached_at).getTime() > PROPERTY_SCAN_TTL_MS) return null;
+      return JSON.parse(rows[0].data);
+    } catch {
+      return null; // treat any cache error as a miss — never block a real scan on it
+    }
+  },
+
+  async savePropertyScanCache(propertyKey, data) {
+    try {
+      await query(
+        `INSERT INTO property_scan_cache (property_key, data, cached_at) VALUES ($1, $2, $3)
+         ON CONFLICT (property_key) DO UPDATE SET data = EXCLUDED.data, cached_at = EXCLUDED.cached_at`,
+        [propertyKey, JSON.stringify(data), now()]
+      );
+    } catch {
+      // best-effort — losing a cache write isn't worth failing the request
+    }
   }
 };
