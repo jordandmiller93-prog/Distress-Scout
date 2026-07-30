@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#05060f" />
+    <meta name="theme-color" content="#000000" />
     <meta name="description" content="AI-powered property distress detection for real estate investors" />
     <title>Distress Scout</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -11,6 +11,48 @@
   </head>
   <body>
     <noscript>You need to enable JavaScript to run this app.</noscript>
+    <canvas id="matrix-rain" aria-hidden="true"></canvas>
     <div id="root"></div>
+    <script>
+      // Restrained digital-rain effect — runs independently of React so it's
+      // present behind every view without touching the component tree.
+      // Low density/opacity by design: an accent, not a distraction.
+      (function () {
+        var canvas = document.getElementById('matrix-rain');
+        var ctx = canvas.getContext('2d');
+        var chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789';
+        var fontSize = 16;
+        var columns, drops;
+
+        function resize() {
+          canvas.width = window.innerWidth;
+          canvas.height = window.innerHeight;
+          columns = Math.floor(canvas.width / fontSize);
+          drops = new Array(columns).fill(0).map(function () {
+            return Math.random() * -100; // stagger start so it doesn't all fall in sync
+          });
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function draw() {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.06)'; // fading trail
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.font = fontSize + 'px monospace';
+
+          for (var i = 0; i < columns; i++) {
+            // Sparse: most columns skip most frames, keeping density low/professional
+            if (Math.random() > 0.06) continue;
+            var char = chars[Math.floor(Math.random() * chars.length)];
+            var y = drops[i] * fontSize;
+            ctx.fillStyle = 'rgba(0, 255, 106, 0.5)';
+            ctx.fillText(char, i * fontSize, y);
+            if (y > canvas.height && Math.random() > 0.98) drops[i] = 0;
+            drops[i]++;
+          }
+        }
+        setInterval(draw, 60);
+      })();
+    </script>
   </body>
 </html>

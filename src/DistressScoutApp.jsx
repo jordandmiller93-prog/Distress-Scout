@@ -48,6 +48,9 @@ export default function DistressScoutApp() {
     running: false, location: null, total: 0, nextOffset: null,
     results: [], violationSource: null, streetViewEnabled: false, error: null, note: null
   });
+  const [dealCalc, setDealCalc] = useState({ arv: '', repairCost: '', offerPercent: 70 });
+  const [dealCalcSaving, setDealCalcSaving] = useState(false);
+  const [dealCalcSavedAt, setDealCalcSavedAt] = useState(null);
   const mapRef = useRef(null);
 
   // Freemium limits
@@ -171,7 +174,8 @@ export default function DistressScoutApp() {
       : null,
     dateFound: new Date(lead.addedAt || lead.createdAt || Date.now()).toLocaleDateString(),
     status: lead.status || 'new',
-    outreach: lead.outreach || null
+    outreach: lead.outreach || null,
+    dealCalc: lead.dealCalc || null
   });
 
   const handleAnalyzeImage = async () => {
@@ -348,6 +352,12 @@ export default function DistressScoutApp() {
     setSelectedLead(lead);
     setCallLog([]);
     setView('details');
+    setDealCalcSavedAt(null);
+    setDealCalc(
+      lead.dealCalc
+        ? { arv: lead.dealCalc.arv, repairCost: lead.dealCalc.repairCost, offerPercent: lead.dealCalc.offerPercent }
+        : { arv: '', repairCost: '', offerPercent: 70 }
+    );
     try {
       const res = await authFetch(`/api/leads/${lead.leadId}/calls`);
       if (res.ok) {
@@ -372,6 +382,41 @@ export default function DistressScoutApp() {
       setSelectedLead((prev) => (prev && prev.leadId === leadId ? { ...prev, status } : prev));
     } catch (err) {
       alert(`Could not update lead status: ${err.message}`);
+    }
+  };
+
+  // Deal Calculator: MAO = (ARV x offer%) - repair costs
+  const computeMAO = (calc) => {
+    const arv = Number(calc.arv);
+    const repairCost = Number(calc.repairCost);
+    const offerPercent = Number(calc.offerPercent) || 70;
+    if (!arv || arv <= 0 || repairCost < 0 || isNaN(repairCost)) return null;
+    return Math.round(arv * (offerPercent / 100) - repairCost);
+  };
+
+  const handleSaveDealCalc = async (leadId) => {
+    const arv = Number(dealCalc.arv);
+    const repairCost = Number(dealCalc.repairCost);
+    if (!arv || arv <= 0) return alert('Enter a valid ARV');
+    if (repairCost < 0 || isNaN(repairCost)) return alert('Enter a valid repair cost');
+
+    setDealCalcSaving(true);
+    try {
+      const res = await authFetch(`/api/leads/${leadId}/deal-calc`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ arv, repairCost, offerPercent: Number(dealCalc.offerPercent) || 70 })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Save failed');
+
+      setSelectedLead((prev) => (prev && prev.leadId === leadId ? { ...prev, dealCalc: data.dealCalc } : prev));
+      setLeads((prev) => prev.map((l) => (l.leadId === leadId ? { ...l, dealCalc: data.dealCalc } : l)));
+      setDealCalcSavedAt(new Date());
+    } catch (err) {
+      alert(`Could not save deal calculation: ${err.message}`);
+    } finally {
+      setDealCalcSaving(false);
     }
   };
 
@@ -542,6 +587,12 @@ export default function DistressScoutApp() {
                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg transition flex items-center"
               >
                 <Map className="w-4 h-4 mr-2" /> Area Scan (ZIP)
+              </button>
+              <button
+                onClick={() => { setSelectedLead(null); setDealCalc({ arv: '', repairCost: '', offerPercent: 70 }); setView('calculator'); }}
+                className="bg-teal-600 hover:bg-teal-700 text-white font-bold py-2 px-6 rounded-lg transition flex items-center"
+              >
+                <BarChart3 className="w-4 h-4 mr-2" /> Deal Calculator
               </button>
               <button
                 onClick={handleExport}
@@ -786,6 +837,85 @@ export default function DistressScoutApp() {
     );
   }
 
+  // DEAL CALCULATOR VIEW: MAO = (ARV x offer%) - repair costs. Standalone —
+  // run numbers on any deal without needing a saved lead.
+  if (view === 'calculator') {
+    const mao = computeMAO(dealCalc);
+    return (
+      <div className="min-h-screen bg-gray-50">
+        <header className="bg-white shadow-sm sticky top-0 z-10">
+          <div className="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
+            <button onClick={() => setView('dashboard')} className="text-gray-600 hover:text-gray-900 font-bold">← Back</button>
+            <h1 className="text-xl font-bold text-gray-900">Deal Calculator</h1>
+            <div className="w-12" />
+          </div>
+        </header>
+
+        <main className="max-w-3xl mx-auto px-4 py-8">
+          <div className="bg-white rounded-lg shadow p-8">
+            <p className="text-gray-600 mb-6">
+              Standard wholesaling formula: Maximum Allowable Offer = (ARV × Offer %) − Repair Costs.
+              Run numbers on any deal — this isn't tied to a saved lead.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">After Repair Value (ARV)</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={dealCalc.arv}
+                  onChange={(e) => setDealCalc((c) => ({ ...c, arv: e.target.value }))}
+                  placeholder="$ e.g. 220000"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">Estimated Repair Costs</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={dealCalc.repairCost}
+                  onChange={(e) => setDealCalc((c) => ({ ...c, repairCost: e.target.value }))}
+                  placeholder="$ e.g. 35000"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">Offer % of ARV</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={dealCalc.offerPercent}
+                  onChange={(e) => setDealCalc((c) => ({ ...c, offerPercent: e.target.value }))}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg text-lg"
+                />
+                <p className="text-xs text-gray-500 mt-1">70% is the standard wholesale rule of thumb</p>
+              </div>
+            </div>
+
+            <div className="bg-gray-50 rounded-lg p-8 text-center">
+              <p className="text-sm font-bold text-gray-600 uppercase tracking-wide">Maximum Allowable Offer</p>
+              <p className="text-6xl font-bold text-green-700 my-3">
+                {mao !== null ? `$${mao.toLocaleString()}` : '—'}
+              </p>
+              <p className="text-gray-500">
+                ({dealCalc.offerPercent || 70}% × ${Number(dealCalc.arv || 0).toLocaleString()}) − ${Number(dealCalc.repairCost || 0).toLocaleString()}
+              </p>
+              {mao !== null && mao < 0 && (
+                <p className="text-red-600 font-bold mt-3 flex items-center justify-center">
+                  <AlertCircle className="w-4 h-4 mr-1" /> Repair costs exceed the offer budget at this ARV — not a viable deal at {dealCalc.offerPercent || 70}%.
+                </p>
+              )}
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   // SCAN VIEW
   if (view === 'scan') {
     return (
@@ -996,6 +1126,72 @@ export default function DistressScoutApp() {
                       </span>
                     </div>
                   ))}
+                </div>
+              </div>
+
+              {/* Deal Calculator: MAO = (ARV x offer%) - repair costs */}
+              <div className="bg-white rounded-lg shadow p-6">
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                  <BarChart3 className="w-5 h-5 mr-2" /> Deal Calculator
+                </h3>
+                <div className="grid grid-cols-3 gap-4 mb-4">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">ARV ($)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={dealCalc.arv}
+                      onChange={(e) => setDealCalc((c) => ({ ...c, arv: e.target.value }))}
+                      placeholder="e.g. 220000"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Repair Costs ($)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={dealCalc.repairCost}
+                      onChange={(e) => setDealCalc((c) => ({ ...c, repairCost: e.target.value }))}
+                      placeholder="e.g. 35000"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-600 mb-1">Offer % of ARV</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={dealCalc.offerPercent}
+                      onChange={(e) => setDealCalc((c) => ({ ...c, offerPercent: e.target.value }))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+                  </div>
+                </div>
+
+                <div className="bg-gray-50 rounded-lg p-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-bold text-gray-600 uppercase">Maximum Allowable Offer</p>
+                    <p className="text-3xl font-bold text-green-700">
+                      {computeMAO(dealCalc) !== null ? `$${computeMAO(dealCalc).toLocaleString()}` : '—'}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      ({dealCalc.offerPercent || 70}% × ARV) − Repair Costs
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <button
+                      onClick={() => handleSaveDealCalc(selectedLead.leadId)}
+                      disabled={dealCalcSaving || computeMAO(dealCalc) === null}
+                      className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-bold py-2 px-4 rounded-lg text-sm transition"
+                    >
+                      {dealCalcSaving ? 'Saving…' : 'Save to Lead'}
+                    </button>
+                    {dealCalcSavedAt && (
+                      <p className="text-xs text-green-600 mt-1">Saved {dealCalcSavedAt.toLocaleTimeString()}</p>
+                    )}
+                  </div>
                 </div>
               </div>
 

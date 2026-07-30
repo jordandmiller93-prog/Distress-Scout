@@ -411,6 +411,27 @@ app.patch('/api/leads/:leadId', authRequired, async (req, res) => {
   res.json({ lead });
 });
 
+// ============ DEAL CALCULATOR (MAO = ARV x offer% - repair costs) ============
+app.patch('/api/leads/:leadId/deal-calc', authRequired, async (req, res) => {
+  const arv = Number(req.body.arv);
+  const repairCost = Number(req.body.repairCost);
+  const offerPercent = req.body.offerPercent !== undefined ? Number(req.body.offerPercent) : 70;
+
+  if (!Number.isFinite(arv) || arv <= 0) return res.status(400).json({ error: 'ARV must be a positive number' });
+  if (!Number.isFinite(repairCost) || repairCost < 0) return res.status(400).json({ error: 'Repair cost must be 0 or greater' });
+  if (!Number.isFinite(offerPercent) || offerPercent <= 0 || offerPercent > 100) {
+    return res.status(400).json({ error: 'Offer percent must be between 1 and 100' });
+  }
+
+  const mao = Math.round(arv * (offerPercent / 100) - repairCost);
+  const dealCalc = { arv, repairCost, offerPercent, mao, calculatedAt: new Date().toISOString() };
+
+  const lead = await db.mergeLeadData(req.params.leadId, req.user.userId, { dealCalc });
+  if (!lead) return res.status(404).json({ error: 'Lead not found' });
+
+  res.json({ lead, dealCalc });
+});
+
 // ============ OUTREACH AGENT ============
 async function generateOutreach(lead) {
   const message = await client.messages.create({
