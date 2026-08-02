@@ -245,7 +245,10 @@ would look like — relative neglect is still a real signal.`
 }
 
 // Score a batch with limited concurrency to stay inside serverless time limits.
-async function scoreBatch(client, properties, concurrency = 5) {
+// A cold ZIP scan (Overpass + violations + AI scoring) has to fit inside
+// Vercel's 60s function cap in one request — higher concurrency here is the
+// difference between ~38s and ~20s for a 10-property batch.
+async function scoreBatch(client, properties, concurrency = 10) {
   const results = [];
   for (let i = 0; i < properties.length; i += concurrency) {
     const chunk = properties.slice(i, i + concurrency);
