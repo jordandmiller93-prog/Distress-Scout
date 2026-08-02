@@ -421,7 +421,11 @@ export default function DistressScoutApp() {
   };
 
   const handleUpgrade = () => {
-    alert('Redirecting to payment...\n\nIn production: Stripe checkout integration here\n\nMonthly: $29\nYearly: $290 (save $58)');
+    alert(
+      'Distress Scout Premium — $29/month\n\n' +
+      '500 scans/month • Unlimited lead storage • Advanced exports\n\n' +
+      'Online checkout is being finalized. To upgrade right now, contact support@distressscout.com and we\'ll get you set up.'
+    );
   };
 
   // LOGIN VIEW
@@ -1134,7 +1138,7 @@ export default function DistressScoutApp() {
                 <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
                   <BarChart3 className="w-5 h-5 mr-2" /> Deal Calculator
                 </h3>
-                <div className="grid grid-cols-3 gap-4 mb-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                   <div>
                     <label className="block text-xs font-bold text-gray-600 mb-1">ARV ($)</label>
                     <input
