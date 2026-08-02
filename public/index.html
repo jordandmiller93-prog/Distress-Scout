@@ -17,41 +17,65 @@
       // Restrained digital-rain effect — runs independently of React so it's
       // present behind every view without touching the component tree.
       // Low density/opacity by design: an accent, not a distraction.
+      // Pauses when the tab is hidden/backgrounded and on very small screens
+      // to avoid burning CPU/battery for no visible benefit, and is wrapped
+      // defensively so a canvas error can never take down the rest of the app.
       (function () {
-        var canvas = document.getElementById('matrix-rain');
-        var ctx = canvas.getContext('2d');
-        var chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789';
-        var fontSize = 16;
-        var columns, drops;
+        try {
+          var canvas = document.getElementById('matrix-rain');
+          var ctx = canvas.getContext('2d');
+          if (!ctx) return;
+          var chars = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789';
+          var fontSize = 16;
+          var columns, drops;
+          var timer = null;
 
-        function resize() {
-          canvas.width = window.innerWidth;
-          canvas.height = window.innerHeight;
-          columns = Math.floor(canvas.width / fontSize);
-          drops = new Array(columns).fill(0).map(function () {
-            return Math.random() * -100; // stagger start so it doesn't all fall in sync
-          });
-        }
-        window.addEventListener('resize', resize);
-        resize();
-
-        function draw() {
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.06)'; // fading trail
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.font = fontSize + 'px monospace';
-
-          for (var i = 0; i < columns; i++) {
-            // Sparse: most columns skip most frames, keeping density low/professional
-            if (Math.random() > 0.06) continue;
-            var char = chars[Math.floor(Math.random() * chars.length)];
-            var y = drops[i] * fontSize;
-            ctx.fillStyle = 'rgba(0, 255, 106, 0.5)';
-            ctx.fillText(char, i * fontSize, y);
-            if (y > canvas.height && Math.random() > 0.98) drops[i] = 0;
-            drops[i]++;
+          function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            columns = Math.floor(canvas.width / fontSize);
+            drops = new Array(columns).fill(0).map(function () {
+              return Math.random() * -100; // stagger start so it doesn't all fall in sync
+            });
           }
+          window.addEventListener('resize', resize);
+          resize();
+
+          function draw() {
+            try {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.06)'; // fading trail
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+              ctx.font = fontSize + 'px monospace';
+
+              for (var i = 0; i < columns; i++) {
+                // Sparse: most columns skip most frames, keeping density low/professional
+                if (Math.random() > 0.06) continue;
+                var char = chars[Math.floor(Math.random() * chars.length)];
+                var y = drops[i] * fontSize;
+                ctx.fillStyle = 'rgba(0, 255, 106, 0.5)';
+                ctx.fillText(char, i * fontSize, y);
+                if (y > canvas.height && Math.random() > 0.98) drops[i] = 0;
+                drops[i]++;
+              }
+            } catch (e) {
+              stop(); // any runtime error permanently disables the effect, never the app
+            }
+          }
+
+          function start() {
+            if (!timer && !document.hidden) timer = setInterval(draw, 60);
+          }
+          function stop() {
+            if (timer) { clearInterval(timer); timer = null; }
+          }
+          document.addEventListener('visibilitychange', function () {
+            if (document.hidden) stop();
+            else start();
+          });
+          start();
+        } catch (e) {
+          // Digital rain is decorative only — never let it block the real app.
         }
-        setInterval(draw, 60);
       })();
     </script>
   </body>
