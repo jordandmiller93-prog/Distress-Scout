@@ -129,6 +129,9 @@ export default function DistressScoutApp() {
 
       localStorage.setItem('ds_token', data.token);
       setToken(data.token);
+      if (mode === 'signup' && window.trackMetaEvent) {
+        window.trackMetaEvent('CompleteRegistration', { content_name: 'Distress Scout signup' });
+      }
       try {
         await loadWorkspace(data.token);
       } catch {
@@ -240,6 +243,7 @@ export default function DistressScoutApp() {
       setLeads([...leads, mapLeadFromApi(data.lead)]);
       setScanResults(scanResults.filter((s) => s.id !== scan.id));
       setStats((s) => ({ ...s, leadsGenerated: s.leadsGenerated + 1, contactsFound: s.contactsFound + 1 }));
+      if (window.trackMetaEvent) window.trackMetaEvent('Lead', { content_name: 'Distressed property saved' });
     } catch (err) {
       alert(`Could not save lead: ${err.message}`);
     }

@@ -14,6 +14,37 @@
     <canvas id="matrix-rain" aria-hidden="true"></canvas>
     <div id="root"></div>
     <script>
+      // Meta (Facebook/Instagram) Pixel — base tracking for ad campaigns.
+      // PIXEL_ID is baked in at build time from REACT_APP_META_PIXEL_ID.
+      // Until a real Pixel exists, this silently no-ops instead of firing
+      // bad tracking calls with a placeholder ID.
+      (function () {
+        var PIXEL_ID = '%REACT_APP_META_PIXEL_ID%';
+        var isPlaceholder = !PIXEL_ID || PIXEL_ID.indexOf('%') === 0 || PIXEL_ID === 'REPLACE_WITH_REAL_PIXEL_ID';
+
+        // Exposed regardless of Pixel status so app code never has to check —
+        // it just becomes a no-op until a real Pixel ID is configured.
+        window.trackMetaEvent = function (eventName, params) {
+          if (isPlaceholder || typeof window.fbq !== 'function') return;
+          window.fbq('track', eventName, params || {});
+        };
+
+        if (isPlaceholder) return;
+
+        !function (f, b, e, v, n, t, s) {
+          if (f.fbq) return; n = f.fbq = function () {
+            n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+          };
+          if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+          n.queue = []; t = b.createElement(e); t.async = !0;
+          t.src = v; s = b.getElementsByTagName(e)[0];
+          s.parentNode.insertBefore(t, s)
+        }(window, document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
+        window.fbq('init', PIXEL_ID);
+        window.fbq('track', 'PageView');
+      })();
+    </script>
+    <script>
       // Restrained digital-rain effect — runs independently of React so it's
       // present behind every view without touching the component tree.
       // Low density/opacity by design: an accent, not a distraction.
